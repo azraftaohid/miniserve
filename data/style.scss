@@ -868,6 +868,22 @@ th span.active span {
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     font-size: 0.9rem;
     line-height: 1.45;
+
+    a {
+      color: inherit;
+      text-decoration: none;
+      display: block;
+
+      &:hover {
+        color: #c0c5ce;
+        text-decoration: underline;
+      }
+
+      &:target {
+        color: #ebcb8b;
+        font-weight: bold;
+      }
+    }
   }
 
   pre {
@@ -892,6 +908,11 @@ th span.active span {
 
   .container {
     padding: 1.5rem 2.5rem;
+  }
+
+  .markdown-toolbar {
+    margin-top: 0.5rem;
+    width: 100%;
   }
 
   h1 {

@@ -124,6 +124,13 @@ fn markdown_viewer_renders_html_and_highlights_syntax(
             .is_some()
     );
 
+    // Verify raw-file-content textarea contains original markdown
+    let raw_area = parsed
+        .find(Attr("id", "raw-file-content"))
+        .next()
+        .expect("Expected raw-file-content textarea");
+    assert_eq!(raw_area.text().trim(), SAMPLE_MARKDOWN.trim());
+
     // Verify Syntect syntax highlighting produced styled spans inside <pre>
     let pre = parsed
         .find(Name("pre"))
@@ -227,6 +234,20 @@ fn text_viewer_renders_yaml_json_txt_with_syntax_highlighting(
             .next()
             .is_some()
     );
+    let raw_area = parsed_yaml
+        .find(Attr("id", "raw-file-content"))
+        .next()
+        .expect("Expected raw-file-content textarea for YAML");
+    assert_eq!(raw_area.text().trim(), SAMPLE_YAML.trim());
+
+    let line1 = parsed_yaml
+        .find(Attr("id", "L1"))
+        .next()
+        .expect("Expected #L1 line number anchor");
+    assert_eq!(line1.text(), "1");
+    assert_eq!(line1.attr("href"), Some("#L1"));
+    assert_eq!(line1.attr("tabindex"), Some("-1"));
+
     let pre = parsed_yaml
         .find(Name("pre"))
         .next()

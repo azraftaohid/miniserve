@@ -305,6 +305,7 @@ pub enum ViewerContent<'a> {
 /// Renders a standalone Markdown or code/textual file viewer page.
 pub fn viewer_page(
     content: ViewerContent<'_>,
+    raw_text: Option<&str>,
     file_meta: Option<&str>,
     abs_uri: &Uri,
     breadcrumbs: &[Breadcrumb],
@@ -313,9 +314,11 @@ pub fn viewer_page(
 ) -> Markup {
     let title_path = breadcrumbs_to_path_string(breadcrumbs);
     let is_single_file = conf.path.is_file();
-    let copy_script = "const el = document.querySelector('.code-viewer pre code, #readme-contents'); \
-        if (el && navigator.clipboard) { \
-            navigator.clipboard.writeText(el.innerText).then(() => { \
+    let copy_script = "const rawEl = document.getElementById('raw-file-content'); \
+        const codeEl = document.querySelector('.code-viewer pre code, #readme-contents'); \
+        const textToCopy = rawEl ? rawEl.value : (codeEl ? codeEl.innerText : ''); \
+        if (textToCopy && navigator.clipboard) { \
+            navigator.clipboard.writeText(textToCopy).then(() => { \
                 const btn = document.getElementById('viewer-copy-btn'); \
                 if (btn) { const orig = btn.innerText; btn.innerText = 'Copied!'; setTimeout(() => { btn.innerText = orig; }, 1500); } \
             }); \
@@ -366,6 +369,11 @@ pub fn viewer_page(
                             a.markdown-action id="markdown-download-link" href="?download=true" {
                                 "Download"
                             }
+                        }
+                    }
+                    @if let Some(raw) = raw_text {
+                        textarea id="raw-file-content" style="display:none;" readonly {
+                            (raw)
                         }
                     }
                     @match content {

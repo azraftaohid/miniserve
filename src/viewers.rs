@@ -83,11 +83,11 @@ pub fn render_markdown_to_html(markdown: &str) -> String {
 /// Renders source code / plaintext into HTML with a line-number gutter and Syntect syntax highlighting.
 pub fn render_code_to_html(code: &str, lang: Option<&str>) -> String {
     let line_count = code.lines().count().max(1);
-    let mut out = String::with_capacity(code.len().saturating_mul(2) + line_count * 20 + 128);
+    let mut out = String::with_capacity(code.len().saturating_mul(2) + line_count * 35 + 128);
 
     out.push_str("<div class=\"code-container\"><div class=\"line-numbers\" aria-hidden=\"true\">");
     for i in 1..=line_count {
-        let _ = write!(out, "<span>{i}</span>");
+        let _ = write!(out, "<a id=\"L{i}\" href=\"#L{i}\" tabindex=\"-1\">{i}</a>");
     }
     out.push_str("</div>");
 
@@ -436,32 +436,33 @@ pub async fn viewer_middleware(
             // Offload synchronous file read, binary sniff, and syntax highlighting to blocking pool
             let file_len = metadata.len();
             let target_clone = target_file.clone();
-            let render_result = web::block(move || -> io::Result<Option<(String, String)>> {
-                let bytes = std::fs::read(&target_clone)?;
-                // Reject binary files that contain a NUL byte in the initial sniff window
-                let sniff_len = bytes.len().min(BINARY_SNIFF_LEN);
-                if bytes[..sniff_len].contains(&0) {
-                    return Ok(None);
-                }
+            let render_result =
+                web::block(move || -> io::Result<Option<(String, String, String)>> {
+                    let bytes = std::fs::read(&target_clone)?;
+                    // Reject binary files that contain a NUL byte in the initial sniff window
+                    let sniff_len = bytes.len().min(BINARY_SNIFF_LEN);
+                    if bytes[..sniff_len].contains(&0) {
+                        return Ok(None);
+                    }
 
-                let text = String::from_utf8_lossy(&bytes);
-                let line_count = text.lines().count().max(1);
-                let meta_badge = format!(
-                    "{line_count} {} · {}",
-                    if line_count == 1 { "line" } else { "lines" },
-                    ByteSize::b(file_len)
-                );
+                    let text = String::from_utf8_lossy(&bytes).into_owned();
+                    let line_count = text.lines().count().max(1);
+                    let meta_badge = format!(
+                        "{line_count} {} · {}",
+                        if line_count == 1 { "line" } else { "lines" },
+                        ByteSize::b(file_len)
+                    );
 
-                let rendered = match viewer_kind {
-                    ViewerKind::Markdown => render_markdown_to_html(&text),
-                    ViewerKind::Code { lang } => render_code_to_html(&text, lang),
-                };
+                    let rendered = match viewer_kind {
+                        ViewerKind::Markdown => render_markdown_to_html(&text),
+                        ViewerKind::Code { lang } => render_code_to_html(&text, lang),
+                    };
 
-                Ok(Some((rendered, meta_badge)))
-            })
-            .await?;
+                    Ok(Some((rendered, meta_badge, text)))
+                })
+                .await?;
 
-            if let Ok(Some((rendered_html, meta_badge))) = render_result {
+            if let Ok(Some((rendered_html, meta_badge, raw_text))) = render_result {
                 let breadcrumbs = build_file_breadcrumbs(&http_req, &conf);
                 let abs_uri = Uri::builder()
                     .scheme(http_req.connection_info().scheme())
@@ -481,6 +482,7 @@ pub async fn viewer_middleware(
 
                     renderer::viewer_page(
                         viewer_content,
+                        Some(&raw_text),
                         Some(&meta_badge),
                         &abs_uri,
                         &breadcrumbs,

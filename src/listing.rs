@@ -329,16 +329,17 @@ pub fn directory_listing(
                     };
                     if conf.readme && readme_rx.is_match(&file_name.to_lowercase()) {
                         let ext = file_name.split('.').next_back().unwrap().to_lowercase();
-                        readme = Some((
-                            file_name.to_string(),
-                            if ext == "md" {
-                                crate::viewers::render_markdown_to_html(&std::fs::read_to_string(
-                                    entry.path(),
-                                )?)
-                            } else {
-                                format!("<pre>{}</pre>", std::fs::read_to_string(entry.path())?)
-                            },
-                        ));
+                        if let Ok(bytes) = std::fs::read(entry.path()) {
+                            let text = String::from_utf8_lossy(&bytes);
+                            readme = Some((
+                                file_name.to_string(),
+                                if ext == "md" {
+                                    crate::viewers::render_markdown_to_html(&text)
+                                } else {
+                                    maud::html! { pre { (text) } }.into_string()
+                                },
+                            ));
+                        }
                     }
                     if !matches_search(&file_name) {
                         continue;
