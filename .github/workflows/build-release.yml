@@ -138,6 +138,9 @@ jobs:
     name: Publish images
     runs-on: ubuntu-latest
     needs: publish
+    permissions:
+      contents: read
+      packages: write
     # Run for tags and pushes to the default branch
     if: (startsWith(github.ref_name, 'v') && github.ref_type == 'tag') || github.event.repository.default_branch == github.ref_name
 
@@ -181,8 +184,8 @@ jobs:
           name: armv7-unknown-linux-musleabihf
           path: target/armv7-unknown-linux-musleabihf/release
 
-      - name: podman login
-        run: podman login --username ${{ secrets.DOCKERHUB_USERNAME }} --password ${{ secrets.DOCKERHUB_TOKEN }} docker.io
+      - name: Log in to GitHub Container Registry
+        run: podman login --username ${{ github.actor }} --password ${{ secrets.GITHUB_TOKEN }} ghcr.io
 
       - name: podman build linux/arm64
         run: podman build --format docker --platform linux/arm64/v8 --manifest miniserve -f Containerfile target/aarch64-unknown-linux-gnu/release
@@ -194,10 +197,10 @@ jobs:
         run: podman build --format docker --platform linux/arm/v7 --manifest miniserve -f Containerfile target/armv7-unknown-linux-gnueabihf/release
 
       - name: podman manifest push latest
-        run: podman manifest push miniserve docker.io/svenstaro/miniserve:latest
+        run: podman manifest push miniserve ghcr.io/${{ github.repository }}:latest
 
       - name: podman manifest push tag version
-        run: podman manifest push miniserve docker.io/svenstaro/miniserve:${{ needs.publish.outputs.version }}
+        run: podman manifest push miniserve ghcr.io/${{ github.repository }}:${{ needs.publish.outputs.version }}
         if: startsWith(github.ref_name, 'v')
 
       - name: podman build linux/arm64 (alpine edition)
@@ -210,8 +213,8 @@ jobs:
         run: podman build --format docker --platform linux/arm/v7 --manifest miniserve-alpine -f Containerfile.alpine target/armv7-unknown-linux-musleabihf/release
 
       - name: podman manifest push latest (alpine edition)
-        run: podman manifest push miniserve-alpine docker.io/svenstaro/miniserve:alpine
+        run: podman manifest push miniserve-alpine ghcr.io/${{ github.repository }}:alpine
 
       - name: podman manifest push tag version (alpine edition)
-        run: podman manifest push miniserve-alpine docker.io/svenstaro/miniserve:${{ needs.publish.outputs.version }}-alpine
+        run: podman manifest push miniserve-alpine ghcr.io/${{ github.repository }}:${{ needs.publish.outputs.version }}-alpine
         if: startsWith(github.ref_name, 'v')
