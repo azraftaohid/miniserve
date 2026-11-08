@@ -1,6 +1,9 @@
 name: Build/publish release
 
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
 
 jobs:
   publish:
@@ -113,7 +116,7 @@ jobs:
         uses: taiki-e/install-action@parse-changelog
 
       - name: Get CHANGELOG entry
-        run: parse-changelog CHANGELOG.md ${{ steps.extract_version.outputs.version }} | tee changelog_entry
+        run: parse-changelog CHANGELOG.md ${{ steps.extract_version.outputs.version }} | tee changelog_entry || echo "Release ${{ steps.extract_version.outputs.version }}" > changelog_entry
         if: startsWith(github.ref_name, 'v') && github.ref_type == 'tag'
         shell: bash
 
@@ -196,12 +199,24 @@ jobs:
       - name: podman build linux/arm
         run: podman build --format docker --platform linux/arm/v7 --manifest miniserve -f Containerfile target/armv7-unknown-linux-gnueabihf/release
 
+      - name: Determine image tags
+        id: tags
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
+            VER="${GITHUB_REF_NAME#v}"
+          else
+            VER=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          fi
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+        shell: bash
+
       - name: podman manifest push latest
         run: podman manifest push miniserve ghcr.io/${{ github.repository }}:latest
 
-      - name: podman manifest push tag version
-        run: podman manifest push miniserve ghcr.io/${{ github.repository }}:${{ needs.publish.outputs.version }}
-        if: startsWith(github.ref_name, 'v')
+      - name: podman manifest push version tags
+        run: |
+          podman manifest push miniserve ghcr.io/${{ github.repository }}:${{ steps.tags.outputs.version }}
+          podman manifest push miniserve ghcr.io/${{ github.repository }}:v${{ steps.tags.outputs.version }}
 
       - name: podman build linux/arm64 (alpine edition)
         run: podman build --format docker --platform linux/arm64/v8 --manifest miniserve-alpine -f Containerfile.alpine target/aarch64-unknown-linux-musl/release
@@ -215,6 +230,7 @@ jobs:
       - name: podman manifest push latest (alpine edition)
         run: podman manifest push miniserve-alpine ghcr.io/${{ github.repository }}:alpine
 
-      - name: podman manifest push tag version (alpine edition)
-        run: podman manifest push miniserve-alpine ghcr.io/${{ github.repository }}:${{ needs.publish.outputs.version }}-alpine
-        if: startsWith(github.ref_name, 'v')
+      - name: podman manifest push version tags (alpine edition)
+        run: |
+          podman manifest push miniserve-alpine ghcr.io/${{ github.repository }}:${{ steps.tags.outputs.version }}-alpine
+          podman manifest push miniserve-alpine ghcr.io/${{ github.repository }}:v${{ steps.tags.outputs.version }}-alpine

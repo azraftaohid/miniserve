@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 - Fix suffix generation for pastes in non-HTTPS env [#1562](https://github.com/svenstaro/miniserve/pull/1562) (thanks @pzhlkj6612)
 - Replace grass with sasso to compile the SCSS [#1591](https://github.com/svenstaro/miniserve/pull/1591)
 
+## [0.35.0-azraftaohid.1] - 2026-11-08
+- Add built-in file viewers for Markdown, PDF, and textual/code files (`--viewers`, `--render-markdown`, `--render-pdf`, `--render-text`)
+- Add selective viewer negation flags (`--no-render-markdown`, `--no-render-pdf`, `--no-render-text`)
+- Improve viewer UX with raw text copying, line deep-linking, and mobile styling
+
 ## [0.35.0] - 2026-04-08
 - Add `--workers` to limit the number of workers and default to 4 [#1556](https://github.com/svenstaro/miniserve/issues/1556)
 
