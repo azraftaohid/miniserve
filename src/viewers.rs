@@ -21,10 +21,12 @@ use actix_web::{
 };
 use bytesize::ByteSize;
 use comrak::{
-    Options as ComrakOptions,
+    Arena, Options as ComrakOptions,
     adapters::SyntaxHighlighterAdapter,
-    markdown_to_html_with_plugins,
+    format_html_with_plugins,
+    nodes::NodeValue,
     options::Plugins,
+    parse_document,
     plugins::syntect::{SyntectAdapter, SyntectAdapterBuilder},
 };
 use percent_encoding::{percent_decode_str, utf8_percent_encode};
@@ -64,6 +66,24 @@ pub enum ViewerKind {
     Code { lang: Option<&'static str> },
 }
 
+fn is_br_tag(s: &str) -> bool {
+    let s = s.trim();
+    if !s.starts_with('<') || !s.ends_with('>') || s.starts_with("</") {
+        return false;
+    }
+    let inner = s[1..s.len() - 1].trim();
+    if inner.len() < 2 {
+        return false;
+    }
+    let (tag_name, rest) = inner.split_at(2);
+    if !tag_name.eq_ignore_ascii_case("br") {
+        return false;
+    }
+    rest.is_empty()
+        || rest.starts_with('/')
+        || rest.chars().next().is_some_and(|c| c.is_ascii_whitespace())
+}
+
 /// Renders a Markdown string into HTML with GFM extensions and Syntect syntax highlighting.
 pub fn render_markdown_to_html(markdown: &str) -> String {
     let mut options = ComrakOptions::default();
@@ -77,7 +97,28 @@ pub fn render_markdown_to_html(markdown: &str) -> String {
     let mut plugins = Plugins::default();
     plugins.render.codefence_syntax_highlighter = Some(&*SYNTECT_ADAPTER);
 
-    markdown_to_html_with_plugins(markdown, &options, &plugins)
+    let arena = Arena::new();
+    let root = parse_document(&arena, markdown, &options);
+
+    // CommonMark treats <br> as raw HTML inline, which causes safe renderers to omit it as
+    // `<!-- raw HTML omitted -->`. In Markdown (especially tables), `<br>` is standard for
+    // intentional hard line breaks. Convert safe `<br>` variants into AST line breaks.
+    for node in root.descendants() {
+        let mut data = node.data.borrow_mut();
+        match data.value {
+            NodeValue::HtmlInline(ref tag) if is_br_tag(tag) => {
+                data.value = NodeValue::LineBreak;
+            }
+            NodeValue::HtmlBlock(ref block) if is_br_tag(&block.literal) => {
+                data.value = NodeValue::LineBreak;
+            }
+            _ => {}
+        }
+    }
+
+    let mut out = String::new();
+    format_html_with_plugins(root, &options, &mut out, &plugins).unwrap();
+    out
 }
 
 /// Renders source code / plaintext into HTML with a line-number gutter and Syntect syntax highlighting.
@@ -532,4 +573,32 @@ pub async fn viewer_middleware(
     }
 
     Ok(res)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_markdown_table_with_br() {
+        let md = "| Col 1 | Col 2 |\n|---|---|\n| Line 1<br>Line 2<br/>Line 3<br />Line 4<BR>Line 5 | Other |";
+        let html = render_markdown_to_html(md);
+        println!("RENDERED TABLE HTML:\n{}", html);
+        assert!(!html.contains("<!-- raw HTML omitted -->"));
+        assert!(html.contains("Line 1<br />\nLine 2<br />\nLine 3<br />\nLine 4<br />\nLine 5"));
+
+        // Standalone <br> block between paragraphs
+        let md_blocks = "Paragraph 1\n\n<br>\n\nParagraph 2";
+        let html_blocks = render_markdown_to_html(md_blocks);
+        println!("RENDERED BLOCKS HTML:\n{}", html_blocks);
+        assert!(html_blocks.contains("Paragraph 1"));
+        assert!(html_blocks.contains("Paragraph 2"));
+
+        // Script tags must still be stripped
+        let md_xss = "| Col |\n|---|\n| <script>alert(1)</script><br>Safe |";
+        let html_xss = render_markdown_to_html(md_xss);
+        println!("RENDERED XSS HTML:\n{}", html_xss);
+        assert!(!html_xss.contains("<script"));
+        assert!(html_xss.contains("Safe"));
+    }
 }

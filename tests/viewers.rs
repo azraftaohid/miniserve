@@ -15,6 +15,10 @@ const SAMPLE_MARKDOWN: &str = r#"# Sample Document
 
 Hello **world**!
 
+| Col 1 | Col 2 |
+| --- | --- |
+| Line 1<br>Line 2 | Value |
+
 ```rust
 fn main() {
     println!("Hello, miniserve!");
@@ -137,6 +141,9 @@ fn markdown_viewer_renders_html_and_highlights_syntax(
         .next()
         .expect("Expected <pre> block");
     assert!(pre.find(Name("span")).next().is_some());
+
+    // Verify <br> inside markdown table is interpreted as line break
+    assert!(body.contains("Line 1<br />\nLine 2"));
 
     // Verify ?raw=true returns unrendered markdown as text/plain
     let raw_resp = reqwest_client
