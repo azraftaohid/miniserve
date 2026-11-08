@@ -426,6 +426,58 @@ pub struct CliArgs {
     #[arg(long, env = "MINISERVE_README")]
     pub readme: bool,
 
+    /// Enable native Markdown file rendering with syntax highlighting
+    #[arg(
+        long = "render-markdown",
+        env = "MINISERVE_RENDER_MARKDOWN",
+        overrides_with = "no_render_markdown"
+    )]
+    pub render_markdown: bool,
+
+    /// Do not render Markdown files as HTML (overrides --viewers and --render-markdown)
+    #[arg(
+        long = "no-render-markdown",
+        env = "MINISERVE_NO_RENDER_MARKDOWN",
+        overrides_with = "render_markdown"
+    )]
+    pub no_render_markdown: bool,
+
+    /// Serve PDF files inline so they open in the browser's built-in PDF viewer
+    #[arg(
+        long = "render-pdf",
+        env = "MINISERVE_RENDER_PDF",
+        overrides_with = "no_render_pdf"
+    )]
+    pub render_pdf: bool,
+
+    /// Do not serve PDF files inline (overrides --viewers and --render-pdf)
+    #[arg(
+        long = "no-render-pdf",
+        env = "MINISERVE_NO_RENDER_PDF",
+        overrides_with = "render_pdf"
+    )]
+    pub no_render_pdf: bool,
+
+    /// Enable native textual and code file rendering with syntax highlighting (e.g. YAML, JSON, TXT, etc.)
+    #[arg(
+        long = "render-text",
+        env = "MINISERVE_RENDER_TEXT",
+        overrides_with = "no_render_text"
+    )]
+    pub render_text: bool,
+
+    /// Do not render textual and code files as HTML (overrides --viewers and --render-text)
+    #[arg(
+        long = "no-render-text",
+        env = "MINISERVE_NO_RENDER_TEXT",
+        overrides_with = "render_text"
+    )]
+    pub no_render_text: bool,
+
+    /// Enable all built-in file viewers (implies --render-markdown, --render-pdf, and --render-text)
+    #[arg(long = "viewers", env = "MINISERVE_VIEWERS")]
+    pub viewers: bool,
+
     /// Disable indexing
     ///
     /// This will prevent directory listings from being generated

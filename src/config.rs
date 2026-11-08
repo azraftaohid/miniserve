@@ -182,6 +182,15 @@ pub struct MiniserveConfig {
     /// If enabled, render the readme from the current directory
     pub readme: bool,
 
+    /// If enabled, render Markdown files (.md, .markdown) as HTML pages with syntax highlighting
+    pub render_markdown: bool,
+
+    /// If enabled, serve PDF files with Content-Disposition: inline for in-browser viewing
+    pub render_pdf: bool,
+
+    /// If enabled, render textual files (yaml, json, txt, code) as HTML pages with syntax highlighting
+    pub render_text: bool,
+
     /// If enabled, indexing is disabled.
     pub disable_indexing: bool,
 
@@ -375,6 +384,9 @@ impl MiniserveConfig {
             hide_theme_selector: args.hide_theme_selector,
             show_wget_footer: args.show_wget_footer,
             readme: args.readme,
+            render_markdown: (args.render_markdown || args.viewers) && !args.no_render_markdown,
+            render_pdf: (args.render_pdf || args.viewers) && !args.no_render_pdf,
+            render_text: (args.render_text || args.viewers) && !args.no_render_text,
             disable_indexing: args.disable_indexing,
             webdav_enabled: args.enable_webdav,
             tls_rustls_config: tls_rustls_server_config,
