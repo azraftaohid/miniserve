@@ -777,6 +777,114 @@ th span.active span {
   min-width: max-content;
 }
 
+.markdown-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+
+  .viewer-meta {
+    font-size: 0.8rem;
+    color: var(--text_color);
+    opacity: 0.75;
+    margin-right: 0.25rem;
+  }
+
+  a.markdown-action,
+  button.markdown-action {
+    display: inline-block;
+    padding: 0.4rem 0.75rem;
+    border: none;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 0.85rem;
+    line-height: inherit;
+    text-decoration: none;
+    cursor: pointer;
+    background: var(--download_button_background);
+    color: var(--download_button_link_color);
+
+    &:hover {
+      background: var(--download_button_background_hover);
+      color: var(--download_button_link_color_hover);
+    }
+  }
+}
+
+.markdown-viewer,
+#readme {
+  margin-top: 1.5rem;
+  padding: 1.5rem;
+  background: var(--table_background);
+  color: var(--table_text_color);
+  border-radius: 4px;
+
+  pre {
+    padding: 1rem;
+    border-radius: 4px;
+    overflow-x: auto;
+    line-height: 1.45;
+  }
+
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.9em;
+  }
+
+  blockquote {
+    margin: 1rem 0;
+    padding: 0.25rem 1rem;
+    border-left: 4px solid var(--switch_theme_border);
+    opacity: 0.9;
+  }
+
+  img {
+    max-width: 100%;
+  }
+}
+
+.code-viewer {
+  margin-top: 1.5rem;
+  background: #2b303c;
+  color: #c0c5ce;
+  border-radius: 4px;
+  overflow: hidden;
+
+  .code-container {
+    display: flex;
+    overflow-x: auto;
+  }
+
+  .line-numbers {
+    display: flex;
+    flex-direction: column;
+    padding: 1rem 0.75rem;
+    text-align: right;
+    user-select: none;
+    -webkit-user-select: none;
+    color: #65737e;
+    background: rgba(0, 0, 0, 0.15);
+    border-right: 1px solid rgba(255, 255, 255, 0.08);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.9rem;
+    line-height: 1.45;
+  }
+
+  pre {
+    margin: 0;
+    padding: 1rem;
+    flex: 1;
+    overflow-x: auto;
+    line-height: 1.45;
+    font-size: 0.9rem;
+  }
+
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: inherit;
+  }
+}
+
 @media (max-width: 760px) {
   nav {
     padding: 0 2.5rem;

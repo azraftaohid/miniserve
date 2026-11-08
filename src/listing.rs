@@ -8,7 +8,6 @@ use actix_web::{
 };
 use bytesize::ByteSize;
 use clap::ValueEnum;
-use comrak::{Options as ComrakOptions, markdown_to_html};
 use percent_encoding::{percent_decode_str, utf8_percent_encode};
 use regex::Regex;
 use serde::Deserialize;
@@ -153,7 +152,7 @@ pub struct Breadcrumb {
 }
 
 impl Breadcrumb {
-    fn new(name: String, link: String) -> Self {
+    pub fn new(name: String, link: String) -> Self {
         Self { name, link }
     }
 }
@@ -333,15 +332,9 @@ pub fn directory_listing(
                         readme = Some((
                             file_name.to_string(),
                             if ext == "md" {
-                                let mut options = ComrakOptions::default();
-
-                                // Enable some GFM extensions
-                                options.extension.strikethrough = true;
-                                options.extension.table = true;
-                                options.extension.autolink = true;
-                                options.extension.tasklist = true;
-
-                                markdown_to_html(&std::fs::read_to_string(entry.path())?, &options)
+                                crate::viewers::render_markdown_to_html(&std::fs::read_to_string(
+                                    entry.path(),
+                                )?)
                             } else {
                                 format!("<pre>{}</pre>", std::fs::read_to_string(entry.path())?)
                             },

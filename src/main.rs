@@ -37,6 +37,7 @@ mod file_utils;
 mod listing;
 mod pipe;
 mod renderer;
+mod viewers;
 mod webdav_fs;
 
 use crate::args::LogColor;
@@ -259,6 +260,7 @@ async fn run(miniserve_config: MiniserveConfig) -> Result<(), StartupError> {
             .route(&inside_config.css_route, web::get().to(css))
             .service(
                 web::scope(&inside_config.route_prefix)
+                    .wrap(from_fn(viewers::viewer_middleware))
                     .wrap(middleware::Condition::new(
                         !inside_config.auth.is_empty(),
                         actix_web::middleware::Compat::new(HttpAuthentication::basic(

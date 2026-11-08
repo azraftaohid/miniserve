@@ -296,6 +296,110 @@ pub fn raw(
     }
 }
 
+/// Content payload for the unified file viewer page.
+pub enum ViewerContent<'a> {
+    Markdown(&'a str),
+    Code(&'a str),
+}
+
+/// Renders a standalone Markdown or code/textual file viewer page.
+pub fn viewer_page(
+    content: ViewerContent<'_>,
+    file_meta: Option<&str>,
+    abs_uri: &Uri,
+    breadcrumbs: &[Breadcrumb],
+    conf: &MiniserveConfig,
+    current_user: Option<&CurrentUser>,
+) -> Markup {
+    let title_path = breadcrumbs_to_path_string(breadcrumbs);
+    let is_single_file = conf.path.is_file();
+    let copy_script = "const el = document.querySelector('.code-viewer pre code, #readme-contents'); \
+        if (el && navigator.clipboard) { \
+            navigator.clipboard.writeText(el.innerText).then(() => { \
+                const btn = document.getElementById('viewer-copy-btn'); \
+                if (btn) { const orig = btn.innerText; btn.innerText = 'Copied!'; setTimeout(() => { btn.innerText = orig; }, 1500); } \
+            }); \
+        }";
+
+    html! {
+        (DOCTYPE)
+        html {
+            (page_header(&title_path, false, conf.web_upload_concurrency, &conf.api_route, &conf.favicon_route, &conf.css_route))
+
+            body #drop-container {
+                nav {
+                    (qr_spoiler(conf.show_qrcode, abs_uri))
+                    (color_scheme_selector(conf.hide_theme_selector))
+                }
+                div.container {
+                    span #top { }
+                    div.title-search-box {
+                        h1.title dir="ltr" {
+                            @for (idx, el) in breadcrumbs.iter().enumerate() {
+                                @if el.link == "." {
+                                    span { bdi { (el.name) } }
+                                } @else {
+                                    a href=(&el.link) {
+                                        bdi { (el.name) }
+                                    }
+                                }
+                                @if idx + 1 < breadcrumbs.len() {
+                                    "/"
+                                }
+                            }
+                        }
+                        div.markdown-toolbar {
+                            @if let Some(meta) = file_meta {
+                                span.viewer-meta { (meta) }
+                            }
+                            @if !is_single_file {
+                                a.markdown-action href="." {
+                                    (chevron_left()) " Back to directory"
+                                }
+                            }
+                            button.markdown-action id="viewer-copy-btn" type="button" onclick=(copy_script) {
+                                "Copy"
+                            }
+                            a.markdown-action id="markdown-raw-link" href="?raw=true" {
+                                "Raw"
+                            }
+                            a.markdown-action id="markdown-download-link" href="?download=true" {
+                                "Download"
+                            }
+                        }
+                    }
+                    @match content {
+                        ViewerContent::Markdown(rendered_html) => {
+                            div id="readme" class="markdown-viewer" {
+                                div id="readme-contents" class="markdown-body" {
+                                    (PreEscaped(rendered_html))
+                                }
+                            }
+                        }
+                        ViewerContent::Code(rendered_html) => {
+                            div class="code-viewer" {
+                                (PreEscaped(rendered_html))
+                            }
+                        }
+                    }
+                    a.back href="#top" {
+                        (arrow_up())
+                    }
+                    div.footer {
+                        @if conf.show_wget_footer {
+                            (wget_footer(abs_uri, conf.title.as_deref(), current_user.map(|x| &*x.name),
+                                conf.file_external_url.as_deref()))
+                        }
+                        @if !conf.hide_version_footer {
+                            (version_footer())
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Renders the QR code SVG
 fn qr_code_svg(url: &Uri, margin: usize) -> Result<String, QRCodeError> {
     let qr = QRBuilder::new(url.to_string())
