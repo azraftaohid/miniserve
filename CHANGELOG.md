@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 - Fix suffix generation for pastes in non-HTTPS env [#1562](https://github.com/svenstaro/miniserve/pull/1562) (thanks @pzhlkj6612)
 - Replace grass with sasso to compile the SCSS [#1591](https://github.com/svenstaro/miniserve/pull/1591)
 
+## [0.35.0-azraftaohid.4] - 2026-11-09
+- Fix Markdown tables showing only the first column on mobile devices
+- Enable smooth horizontal scrolling for Markdown tables on mobile and desktop
+- Replace archived `svenstaro/upx-action` with native UPX execution in CI release workflow
+
 ## [0.35.0-azraftaohid.3] - 2026-11-09
 - Add server-side LaTeX math rendering to Markdown viewers (native MathML Core)
 
