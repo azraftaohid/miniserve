@@ -15,9 +15,12 @@ const SAMPLE_MARKDOWN: &str = r#"# Sample Document
 
 Hello **world**!
 
+Math inline: $E = mc^2$ and display:
+$$\int_0^\infty e^{-x} dx = 1$$
+
 | Col 1 | Col 2 |
 | --- | --- |
-| Line 1<br>Line 2 | Value |
+| Line 1<br>Line 2 | $x < y$ |
 
 ```rust
 fn main() {
@@ -144,6 +147,12 @@ fn markdown_viewer_renders_html_and_highlights_syntax(
 
     // Verify <br> inside markdown table is interpreted as line break
     assert!(body.contains("Line 1<br />\nLine 2"));
+
+    // Verify MathML rendering for inline and display math
+    assert!(
+        body.contains("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"inline\">")
+    );
+    assert!(body.contains("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\">"));
 
     // Verify ?raw=true returns unrendered markdown as text/plain
     let raw_resp = reqwest_client

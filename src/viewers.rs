@@ -30,6 +30,7 @@ use comrak::{
     plugins::syntect::{SyntectAdapter, SyntectAdapterBuilder},
 };
 use percent_encoding::{percent_decode_str, utf8_percent_encode};
+use regex::Regex;
 use serde::Deserialize;
 
 use crate::{
@@ -66,6 +67,53 @@ pub enum ViewerKind {
     Code { lang: Option<&'static str> },
 }
 
+static MATH_CODEBLOCK_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?s)<pre><code[^>]*data-math-style="display"[^>]*>(.*?)</code></pre>"#).unwrap()
+});
+
+static MATH_SPAN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?s)<(?:span|code) data-math-style="(inline|display)">(.*?)</(?:span|code)>"#)
+        .unwrap()
+});
+
+fn unescape_html_entities(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&")
+}
+
+fn convert_math_to_mathml(html: &str) -> String {
+    if !html.contains("data-math-style") {
+        return html.to_string();
+    }
+
+    let stage1 = MATH_CODEBLOCK_RE.replace_all(html, |caps: &regex::Captures| {
+        let unescaped = unescape_html_entities(caps[1].trim());
+        match latex2mathml::latex_to_mathml(&unescaped, latex2mathml::DisplayStyle::Block) {
+            Ok(mathml) => mathml,
+            Err(_) => caps[0].to_string(),
+        }
+    });
+
+    let stage2 = MATH_SPAN_RE.replace_all(&stage1, |caps: &regex::Captures| {
+        let style = if &caps[1] == "display" {
+            latex2mathml::DisplayStyle::Block
+        } else {
+            latex2mathml::DisplayStyle::Inline
+        };
+        let unescaped = unescape_html_entities(&caps[2]);
+        match latex2mathml::latex_to_mathml(&unescaped, style) {
+            Ok(mathml) => mathml,
+            Err(_) => caps[0].to_string(),
+        }
+    });
+
+    stage2.into_owned()
+}
+
 fn is_br_tag(s: &str) -> bool {
     let s = s.trim();
     if !s.starts_with('<') || !s.ends_with('>') || s.starts_with("</") {
@@ -92,6 +140,9 @@ pub fn render_markdown_to_html(markdown: &str) -> String {
     options.extension.autolink = true;
     options.extension.tasklist = true;
     options.extension.footnotes = true;
+    options.extension.math_dollars = true;
+    options.extension.math_latex = true;
+    options.extension.math_code = true;
     // Keep options.render.r#unsafe = false (default) so raw HTML/scripts are escaped.
 
     let mut plugins = Plugins::default();
@@ -118,7 +169,7 @@ pub fn render_markdown_to_html(markdown: &str) -> String {
 
     let mut out = String::new();
     format_html_with_plugins(root, &options, &mut out, &plugins).unwrap();
-    out
+    convert_math_to_mathml(&out)
 }
 
 /// Renders source code / plaintext into HTML with a line-number gutter and Syntect syntax highlighting.
@@ -600,5 +651,63 @@ mod tests {
         println!("RENDERED XSS HTML:\n{}", html_xss);
         assert!(!html_xss.contains("<script"));
         assert!(html_xss.contains("Safe"));
+    }
+
+    #[test]
+    fn test_markdown_math_rendering() {
+        // 1. Inline and display math with dollar and LaTeX delimiters
+        let md = "Inline: $E = mc^2$ and \\(a^2 + b^2 = c^2\\).\n\nDisplay:\n$$\\int_0^\\infty e^{-x} dx = 1$$\n\n\\[\\sum_{i=1}^n i\\]";
+        let html = render_markdown_to_html(md);
+        assert!(html.contains("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"inline\"><mi>E</mi><mo>=</mo><mi>m</mi><msup><mi>c</mi><mn>2</mn></msup></math>"));
+        assert!(html.contains("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"inline\"><msup><mi>a</mi><mn>2</mn></msup><mo>+</mo><msup><mi>b</mi><mn>2</mn></msup><mo>=</mo><msup><mi>c</mi><mn>2</mn></msup></math>"));
+        assert!(
+            html.contains("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\">")
+        );
+
+        // 2. Code block math
+        let md_code = "```math\n\\frac{a}{b}\n```";
+        let html_code = render_markdown_to_html(md_code);
+        assert!(
+            html_code
+                .contains("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\">")
+        );
+        assert!(html_code.contains("<mfrac><mi>a</mi><mi>b</mi></mfrac>"));
+
+        // 3. Inequalities with < and > inside math
+        let md_ineq = "Formula: $x < y \\land y > z$";
+        let html_ineq = render_markdown_to_html(md_ineq);
+        assert!(
+            html_ineq
+                .contains("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"inline\">")
+        );
+        assert!(!html_ineq.contains("&lt;"));
+
+        // 4. Currency amounts must not be converted to math
+        let md_currency = "The book costs $50 and shipping is $10.";
+        let html_currency = render_markdown_to_html(md_currency);
+        assert!(html_currency.contains("$50"));
+        assert!(html_currency.contains("$10"));
+        assert!(!html_currency.contains("<math"));
+
+        // 5. Malformed LaTeX does not panic and preserves content
+        let md_bad = "Invalid: $\\frac{incomplete$";
+        let html_bad = render_markdown_to_html(md_bad);
+        assert!(html_bad.contains("\\frac{incomplete"));
+
+        // 6. Math inside tables with <br> breaks
+        let md_table =
+            "| Formula | Details |\n|---|---|\n| $x^2 + y^2 = 1$<br>$z = 0$ | Unit circle |";
+        let html_table = render_markdown_to_html(md_table);
+        assert!(
+            html_table
+                .contains("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"inline\">")
+        );
+        assert!(html_table.contains("<br />"));
+        assert!(html_table.contains("Unit circle"));
+
+        // 7. Matrix and complex expressions
+        let md_matrix = "$$\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}$$";
+        let html_matrix = render_markdown_to_html(md_matrix);
+        assert!(html_matrix.contains("<mtable>"));
     }
 }
