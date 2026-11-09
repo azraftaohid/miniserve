@@ -27,7 +27,7 @@ This repository is a customized fork of [svenstaro/miniserve](https://github.com
 
 | Capability | Upstream | This Fork |
 |---|---|---|
-| **Markdown** | Directory README only | Standalone `.md` rendering with GFM, task lists, footnotes, and syntax highlighting |
+| **Markdown** | Directory README only | Standalone `.md` rendering with GFM, native MathML LaTeX math (`$...$`, `$$...$$`, `\(...\)`, `\[...\]`, ```` ```math ````), task lists, footnotes, and syntax highlighting |
 | **PDF** | Download as attachment | Native inline browser viewing |
 | **Code & Text** | Raw, unstyled text | Syntax highlighting, line numbers, and `#L1` deep links |
 | **Container Images** | Docker Hub | Multi-architecture GHCR images with pinned release tags |
@@ -209,7 +209,7 @@ Some mobile browsers like Firefox on Android will offer to open the camera app w
 - Sane and secure defaults
 - TLS (for supported architectures)
 - Supports README.md rendering like on GitHub
-- Built-in file viewers for Markdown, PDF, and source code/text files with syntax highlighting and line numbers (`--viewers`)
+- Built-in file viewers for Markdown (with native MathML LaTeX math support), PDF, and source code/text files with syntax highlighting and line numbers (`--viewers`)
 - Range requests
 - WebDAV support
 - Healthcheck route (at `/__miniserve_internal/healthcheck`)

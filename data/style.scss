@@ -841,6 +841,21 @@ th span.active span {
   img {
     max-width: 100%;
   }
+
+  math {
+    font-family: "STIX Two Math", "Latin Modern Math", "Cambria Math", "KaTeX_Main", serif;
+    font-size: 1.05em;
+
+    &[display="block"] {
+      display: block;
+      margin: 1rem 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: 0.5rem 0;
+      max-width: 100%;
+      text-align: center;
+    }
+  }
 }
 
 .code-viewer {

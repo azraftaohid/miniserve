@@ -1933,6 +1933,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4345964bb142484797b161f473a503a434de77149dd8c7427788c6e13379388"
 
 [[package]]
+name = "latex2mathml"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "678cf5bdb3ba63a264e6e0c9eee36538ca1d2da0afa4dd801c1f96309e710765"
+
+[[package]]
 name = "libc"
 version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2108,7 +2114,7 @@ dependencies = [
 
 [[package]]
 name = "miniserve"
-version = "0.35.0-azraftaohid.2"
+version = "0.35.0-azraftaohid.3"
 dependencies = [
  "actix-files",
  "actix-multipart",
@@ -2134,6 +2140,7 @@ dependencies = [
  "hex",
  "httparse",
  "if-addrs",
+ "latex2mathml",
  "libflate",
  "log",
  "maud",
