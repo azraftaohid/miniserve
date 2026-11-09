@@ -819,6 +819,67 @@ th span.active span {
   color: var(--table_text_color);
   border-radius: 4px;
 
+  table {
+    display: block;
+    width: max-content;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    border-collapse: collapse;
+    border-spacing: 0;
+    margin: 1.25rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+
+    th,
+    td {
+      display: table-cell !important;
+      padding: 0.5rem 0.85rem;
+      border: 1px solid var(--switch_theme_border);
+      line-height: 1.45;
+      text-align: left;
+    }
+
+    th[align="center"],
+    td[align="center"] {
+      text-align: center;
+    }
+
+    th[align="right"],
+    td[align="right"] {
+      text-align: right;
+    }
+
+    th[align="left"],
+    td[align="left"] {
+      text-align: left;
+    }
+
+    th {
+      font-weight: 600;
+      color: var(--table_header_text_color);
+      background: var(--table_header_background);
+      border-bottom: 2px solid var(--switch_theme_border);
+    }
+
+    tbody {
+      tr:nth-child(odd) {
+        background: var(--odd_row_background);
+      }
+      tr:nth-child(even) {
+        background: var(--even_row_background);
+      }
+      tr:hover {
+        background: var(--active_row_color);
+      }
+    }
+
+    p {
+      display: block;
+      margin: 0;
+    }
+  }
+
   pre {
     padding: 1rem;
     border-radius: 4px;
@@ -934,20 +995,22 @@ th span.active span {
     font-size: 1.4em;
   }
 
-  td:not(:nth-child(1)),
-  th:not(:nth-child(1)) {
-    display: none;
+  .container > table {
+    td:not(:nth-child(1)),
+    th:not(:nth-child(1)) {
+      display: none;
+    }
+
+    tbody tr td {
+      padding-top: 0;
+      padding-bottom: 0;
+    }
   }
 
   .mobile-info {
     display: inline-flex;
     align-items: center;
     margin: auto;
-  }
-
-  table tbody tr td {
-    padding-top: 0;
-    padding-bottom: 0;
   }
 
   a {
@@ -1012,6 +1075,11 @@ th span.active span {
   }
 
   .container {
+    padding: 1rem;
+  }
+
+  .markdown-viewer,
+  #readme {
     padding: 1rem;
   }
 }
