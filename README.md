@@ -17,6 +17,53 @@
 **miniserve** is a small, self-contained cross-platform CLI tool that allows you to just grab the binary and serve some file(s) via HTTP.
 Sometimes this is just a more practical and quick way than doing things properly.
 
+---
+
+## About This Fork
+
+This repository is a customized fork of [svenstaro/miniserve](https://github.com/svenstaro/miniserve), adding built-in browser-based viewers for documents, personal notes, and source code.
+
+### Key Differences from Upstream
+
+| Capability | Upstream | This Fork |
+|---|---|---|
+| **Markdown** | Directory README only | Standalone `.md` rendering with GFM, task lists, footnotes, and syntax highlighting |
+| **PDF** | Download as attachment | Native inline browser viewing |
+| **Code & Text** | Raw, unstyled text | Syntax highlighting, line numbers, and `#L1` deep links |
+| **Container Images** | Docker Hub | Multi-architecture GHCR images with pinned release tags |
+
+### Quick Start
+
+```bash
+# Enable all viewers
+miniserve --viewers ~/notes
+
+# Enable all except PDF
+miniserve --viewers --no-render-pdf ~/notes
+
+# Enable Markdown only
+miniserve --render-markdown ~/notes
+```
+
+**Docker:**
+
+```bash
+docker run -p 8080:8080 \
+  -v /path/to/notes:/data:ro \
+  ghcr.io/azraftaohid/miniserve:latest \
+  -D --readme --viewers /data
+```
+
+### Maintenance & Code Auditing
+
+This fork was developed to address personal document-reading and browsing needs across desktop and mobile devices. Its changes have not been submitted upstream.
+
+These changes have intentionally **not** been submitted as pull requests to upstream `svenstaro/miniserve`. The implementation was developed through iterative, AI-assisted exploratory programming. The maintainer does not claim formal Rust engineering expertise or guarantee conformity with idiomatic Rust practices or upstream security standards.
+
+This is an independently maintained personal fork. **Review the code and assess its security and operational suitability before deploying it in production or exposing it to untrusted users.**
+
+---
+
 ## Screenshot
 
 ![Screenshot](screenshot.png)
@@ -26,6 +73,17 @@ Sometimes this is just a more practical and quick way than doing things properly
 ### Serve a directory:
 
     miniserve linux-distro-collection/
+
+### Serve with built-in file viewers (Markdown, PDF, Code/Text):
+
+    # Enable all viewers
+    miniserve --viewers my-documents/
+
+    # Or enable specific viewers individually:
+    miniserve --render-markdown --render-pdf my-documents/
+
+    # Or enable all viewers except PDFs:
+    miniserve --viewers --no-render-pdf my-documents/
 
 ### Serve a single file:
 
@@ -151,6 +209,7 @@ Some mobile browsers like Firefox on Android will offer to open the camera app w
 - Sane and secure defaults
 - TLS (for supported architectures)
 - Supports README.md rendering like on GitHub
+- Built-in file viewers for Markdown, PDF, and source code/text files with syntax highlighting and line numbers (`--viewers`)
 - Range requests
 - WebDAV support
 - Healthcheck route (at `/__miniserve_internal/healthcheck`)
@@ -474,6 +533,41 @@ Options:
 
           [env: MINISERVE_README=]
 
+      --render-markdown
+          Enable native Markdown file rendering with syntax highlighting
+
+          [env: MINISERVE_RENDER_MARKDOWN=]
+
+      --no-render-markdown
+          Do not render Markdown files as HTML (overrides --viewers and --render-markdown)
+
+          [env: MINISERVE_NO_RENDER_MARKDOWN=]
+
+      --render-pdf
+          Serve PDF files inline so they open in the browser's built-in PDF viewer
+
+          [env: MINISERVE_RENDER_PDF=]
+
+      --no-render-pdf
+          Do not serve PDF files inline (overrides --viewers and --render-pdf)
+
+          [env: MINISERVE_NO_RENDER_PDF=]
+
+      --render-text
+          Enable native textual and code file rendering with syntax highlighting (e.g. YAML, JSON, TXT, etc.)
+
+          [env: MINISERVE_RENDER_TEXT=]
+
+      --no-render-text
+          Do not render textual and code files as HTML (overrides --viewers and --render-text)
+
+          [env: MINISERVE_NO_RENDER_TEXT=]
+
+      --viewers
+          Enable all built-in file viewers (implies --render-markdown, --render-pdf, and --render-text)
+
+          [env: MINISERVE_VIEWERS=]
+
   -I, --disable-indexing
           Disable indexing
 
@@ -560,13 +654,17 @@ Alternatively install with [Scoop](https://scoop.sh/):
     cargo install --locked miniserve
     miniserve
 
-**With Docker:** Make sure the Docker daemon is running and then run
+**With Docker (this fork from GHCR):**
+
+    docker run -v /tmp:/tmp -p 8080:8080 --rm -it ghcr.io/azraftaohid/miniserve:latest --viewers /tmp
+
+**With Docker (upstream):** Make sure the Docker daemon is running and then run
 
     docker run -v /tmp:/tmp -p 8080:8080 --rm -it docker.io/svenstaro/miniserve /tmp
 
 **With Podman:** Just run
 
-    podman run -v /tmp:/tmp -p 8080:8080 --rm -it docker.io/svenstaro/miniserve /tmp
+    podman run -v /tmp:/tmp -p 8080:8080 --rm -it ghcr.io/azraftaohid/miniserve:latest --viewers /tmp
 
 **With Helm:** See [this third-party Helm chart](https://codeberg.org/wrenix/helm-charts/src/branch/main/miniserve) by @wrenix.
 
