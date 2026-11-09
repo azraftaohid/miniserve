@@ -92,13 +92,23 @@ jobs:
         run: echo "EXE=.exe" >> $env:GITHUB_ENV
         if: startsWith(matrix.os, 'windows')
 
+      - name: Install UPX (Ubuntu)
+        run: |
+          if ! command -v upx &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y upx
+          fi
+        if: matrix.compress && startsWith(matrix.os, 'ubuntu')
+
+      - name: Install UPX (Windows)
+        run: |
+          choco install upx -y
+          Add-Content $env:GITHUB_PATH "C:\ProgramData\chocolatey\bin"
+        if: matrix.compress && startsWith(matrix.os, 'windows')
+
       - name: Compress binaries
-        uses: svenstaro/upx-action@v2
-        with:
-          files: target/${{ matrix.target }}/release/miniserve${{ env.EXE }}
-          args: --best --lzma
-          strip: false  # We're stripping already in Cargo.toml
-        if: ${{ matrix.compress }}
+        run: upx --best --lzma target/${{ matrix.target }}/release/miniserve${{ env.EXE }}
+        if: matrix.compress
+        shell: bash
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
