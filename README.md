@@ -54,6 +54,25 @@ docker run -p 8080:8080 \
   -D --readme --viewers /data
 ```
 
+**Docker Compose:**
+
+```yaml
+services:
+  miniserve:
+    image: ghcr.io/azraftaohid/miniserve:latest
+    container_name: miniserve
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - "/path/to/notes:/data:ro"
+    command:
+      - "-D"          # List directories first
+      - "--readme"    # Render markdown README.md files inline
+      - "--viewers"   # Enables built-in Markdown, PDF, and code/text viewers
+      - "/data"
+```
+
 ### Maintenance & Code Auditing
 
 This fork was developed to address personal document-reading and browsing needs across desktop and mobile devices. Its changes have not been submitted upstream.
