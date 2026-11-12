@@ -158,11 +158,11 @@ impl Breadcrumb {
 }
 
 pub async fn file_handler(req: HttpRequest) -> actix_web::Result<actix_files::NamedFile> {
-    let path = &req
-        .app_data::<web::Data<crate::MiniserveConfig>>()
-        .unwrap()
-        .path;
-    actix_files::NamedFile::open(path).map_err(Into::into)
+    let conf = req.app_data::<web::Data<crate::MiniserveConfig>>().unwrap();
+    if !conf.path_filter.is_file_allowed(Path::new("")) {
+        return Err(actix_web::error::ErrorNotFound("File not found."));
+    }
+    actix_files::NamedFile::open(&conf.path).map_err(Into::into)
 }
 
 /// List a directory and renders a HTML file accordingly
@@ -175,6 +175,58 @@ pub fn directory_listing(
     let current_user: Option<&CurrentUser> = extensions.get::<CurrentUser>();
 
     let conf = req.app_data::<web::Data<crate::MiniserveConfig>>().unwrap();
+    let rel_dir = dir
+        .path
+        .strip_prefix(&dir.base)
+        .map(crate::path_filter::normalize_rel_path)
+        .unwrap_or_else(|_| {
+            let rel_encoded = req
+                .path()
+                .strip_prefix(&conf.route_prefix)
+                .unwrap_or(req.path());
+            let decoded_dir = percent_decode_str(rel_encoded).decode_utf8_lossy();
+            crate::path_filter::normalize_rel_path(decoded_dir.as_ref())
+        });
+    let canon_root = dir.base.canonicalize().unwrap_or_else(|_| dir.base.clone());
+    let current_dir_state = conf
+        .path_filter
+        .effective_dir_state(&canon_root, &dir.path, &rel_dir);
+    if current_dir_state == crate::path_filter::PathState::Denied {
+        return Ok(ServiceResponse::new(
+            req.clone(),
+            HttpResponse::NotFound().finish(),
+        ));
+    }
+
+    if !conf.path_filter.is_none()
+        && current_dir_state == crate::path_filter::PathState::Allowed
+        && let Some(ref index_file) = conf.index
+    {
+        let rel_index = rel_dir.join(index_file);
+        let mut check_path = dir.path.clone();
+        let mut symlink_blocked = false;
+        for comp in index_file.components() {
+            check_path.push(comp);
+            if conf.no_symlinks && check_path.is_symlink() {
+                symlink_blocked = true;
+                break;
+            }
+        }
+        if !symlink_blocked
+            && check_path.is_file()
+            && conf.path_filter.is_file_allowed(&rel_index)
+            && conf
+                .path_filter
+                .check_canonical_target(&canon_root, &check_path)
+            && let Ok(named_file) = actix_files::NamedFile::open(&check_path)
+        {
+            return Ok(ServiceResponse::new(
+                req.clone(),
+                named_file.prefer_utf8(true).into_response(req),
+            ));
+        }
+    }
+
     if conf.disable_indexing {
         return Ok(ServiceResponse::new(
             req.clone(),
@@ -284,9 +336,21 @@ pub fn directory_listing(
                 if conf.no_symlinks && is_symlink {
                     continue;
                 }
+                if !conf
+                    .path_filter
+                    .check_canonical_target(&canon_root, &entry.path())
+                {
+                    continue;
+                }
                 let last_modification_date = metadata.modified().ok();
+                let rel_entry_path = rel_dir.join(&file_name);
 
                 if metadata.is_dir() {
+                    if conf.path_filter.dir_state(&rel_entry_path)
+                        == crate::path_filter::PathState::Denied
+                    {
+                        continue;
+                    }
                     if !matches_search(&file_name) {
                         continue;
                     }
@@ -299,6 +363,9 @@ pub fn directory_listing(
                         symlink_dest,
                     ));
                 } else if metadata.is_file() {
+                    if !conf.path_filter.is_file_allowed(&rel_entry_path) {
+                        continue;
+                    }
                     let file_link = match &conf.file_external_url {
                         Some(external_url) => {
                             // Construct the full relative path including subdirectories
@@ -389,7 +456,11 @@ pub fn directory_listing(
     }
 
     if let Some(archive_method) = query_params.download {
-        if !archive_method.is_enabled(conf.tar_enabled, conf.tar_gz_enabled, conf.zip_enabled) {
+        if !archive_method.is_enabled(conf.tar_enabled, conf.tar_gz_enabled, conf.zip_enabled)
+            || !conf
+                .path_filter
+                .effective_can_archive_dir(&canon_root, &dir.path, &rel_dir)
+        {
             return Ok(ServiceResponse::new(
                 req.clone(),
                 HttpResponse::Forbidden()
@@ -447,6 +518,7 @@ pub fn directory_listing(
                     query_params,
                     &breadcrumbs,
                     &encoded_dir,
+                    &rel_dir,
                     conf,
                     current_user,
                 )

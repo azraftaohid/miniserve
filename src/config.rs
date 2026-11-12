@@ -6,7 +6,7 @@ use std::{
 };
 
 use actix_web::http::header::HeaderMap;
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 
 #[cfg(feature = "tls")]
 use rustls_pemfile as pemfile;
@@ -18,6 +18,7 @@ use crate::{
     auth::RequiredAuth,
     file_utils::sanitize_path,
     listing::{SortingMethod, SortingOrder},
+    path_filter::PathFilter,
     renderer::ThemeSlug,
 };
 
@@ -212,6 +213,9 @@ pub struct MiniserveConfig {
 
     /// Color choice for the log output
     pub log_color: LogColor,
+
+    /// Path exclusion / inclusion filter
+    pub path_filter: PathFilter,
 }
 
 impl MiniserveConfig {
@@ -336,9 +340,41 @@ impl MiniserveConfig {
         #[cfg(unix)]
         let upload_chmod = args.chmod.unwrap_or_else(get_default_filemode);
 
+        if args.ignore_file.is_some() && (!args.exclude.is_empty() || !args.include.is_empty()) {
+            bail!(
+                "Cannot use '--ignore-file' together with '--exclude' or '--include'. Please use one or the other."
+            );
+        }
+
+        let serve_path = args.path.unwrap_or_else(|| PathBuf::from("."));
+
+        if serve_path.is_file()
+            && (args.ignore_file.is_some() || !args.exclude.is_empty() || !args.include.is_empty())
+        {
+            bail!(
+                "Path filtering options ('--exclude', '--include', '--ignore-file') cannot be used when serving a single file."
+            );
+        }
+
+        let path_filter = if let Some(ref ignore_file) = args.ignore_file {
+            PathFilter::from_ignore_file(ignore_file, Some(&serve_path))?
+        } else {
+            PathFilter::from_prefixes(&args.exclude, &args.include)?
+        };
+
+        if args.spa
+            && let Some(ref index_file) = args.index
+            && !path_filter.is_file_allowed(index_file)
+        {
+            bail!(
+                "The '--index' file {:?} cannot be excluded when '--spa' mode is enabled.",
+                index_file
+            );
+        }
+
         Ok(Self {
             verbose: args.verbose,
-            path: args.path.unwrap_or_else(|| PathBuf::from(".")),
+            path: serve_path,
             temp_upload_directory: args.temp_upload_directory,
             port,
             interfaces,
@@ -394,6 +430,7 @@ impl MiniserveConfig {
             show_exact_bytes,
             file_external_url: args.file_external_url,
             log_color: args.log_color,
+            path_filter,
         })
     }
 }

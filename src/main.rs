@@ -35,6 +35,7 @@ mod errors;
 mod file_op;
 mod file_utils;
 mod listing;
+mod path_filter;
 mod pipe;
 mod renderer;
 mod viewers;
@@ -367,7 +368,12 @@ fn configure_app(app: &mut web::ServiceConfig, conf: &MiniserveConfig) {
 
         // Use specific index file if one was provided.
         if let Some(ref index_file) = conf.index {
-            files = files.index_file(index_file.to_string_lossy());
+            // When path filtering is active, index file serving is handled inside
+            // `listing::directory_listing` so `PathFilter` cannot be bypassed on PassThrough
+            // directories or excluded index files.
+            if matches!(conf.path_filter, crate::path_filter::PathFilter::None) {
+                files = files.index_file(index_file.to_string_lossy());
+            }
             // Handle SPA option.
             //
             // Note: --spa requires --index in clap.
@@ -391,14 +397,43 @@ fn configure_app(app: &mut web::ServiceConfig, conf: &MiniserveConfig) {
                 let conf = req
                     .app_data::<web::Data<MiniserveConfig>>()
                     .expect("Could not get miniserve config");
-                let mut path_base = req.path()[1..].to_string();
+                let stripped = req
+                    .path()
+                    .strip_prefix(&conf.route_prefix)
+                    .unwrap_or(req.path());
+                let mut path_base = stripped.trim_start_matches('/').to_string();
                 if path_base.ends_with('/') {
                     path_base.pop();
                 }
                 if !path_base.ends_with("html") {
                     path_base = format!("{path_base}.html");
                 }
-                let file = NamedFile::open(conf.path.join(path_base))?;
+                let Some(sanitized) = file_utils::sanitize_path(&path_base, conf.show_hidden)
+                else {
+                    return Err(actix_web::error::ErrorNotFound("File not found"));
+                };
+                let target_file = conf.path.join(&sanitized);
+                if conf.no_symlinks {
+                    let mut check_path = conf.path.clone();
+                    for comp in sanitized.components() {
+                        check_path.push(comp);
+                        if check_path.is_symlink() {
+                            return Err(actix_web::error::ErrorNotFound("File not found"));
+                        }
+                    }
+                }
+                let canon_base = conf
+                    .path
+                    .canonicalize()
+                    .unwrap_or_else(|_| conf.path.clone());
+                if !conf.path_filter.is_file_allowed(&sanitized)
+                    || !conf
+                        .path_filter
+                        .check_canonical_target(&canon_base, &target_file)
+                {
+                    return Err(actix_web::error::ErrorNotFound("File not found"));
+                }
+                let file = NamedFile::open(target_file)?;
                 let res = file.into_response(&req);
                 Ok(ServiceResponse::new(req, res))
             }));
@@ -409,30 +444,38 @@ fn configure_app(app: &mut web::ServiceConfig, conf: &MiniserveConfig) {
         }
 
         let base_path = conf.path.clone();
+        let canon_base = conf
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| conf.path.clone());
         let no_symlinks = conf.no_symlinks;
+        let path_filter = conf.path_filter.clone();
         files
             .show_files_listing()
             .files_listing_renderer(listing::directory_listing)
             .prefer_utf8(true)
             .redirect_to_slash_directory()
             .path_filter(move |path, _| {
-                if !no_symlinks {
-                    // no_symlinks not enabled => nothing to filter
-                    return true;
-                }
-
                 // append path to base_path component by component and check for symlink at each step
                 let mut full_path = base_path.clone();
                 for component in path.components() {
                     full_path.push(component);
-                    if full_path.is_symlink() {
+                    if no_symlinks && full_path.is_symlink() {
                         // path contains symlink component while no_symlink is active => filter
                         return false;
                     }
                 }
 
-                // path didn't include a symlink component => don't filter
-                true
+                if !path_filter.check_canonical_target(&canon_base, &full_path) {
+                    return false;
+                }
+
+                let is_dir = full_path.is_dir();
+                match path_filter.evaluate(path, is_dir) {
+                    crate::path_filter::PathState::Allowed => true,
+                    crate::path_filter::PathState::PassThrough => is_dir,
+                    crate::path_filter::PathState::Denied => false,
+                }
             })
     };
 
@@ -453,7 +496,12 @@ fn configure_app(app: &mut web::ServiceConfig, conf: &MiniserveConfig) {
     }
 
     if conf.webdav_enabled {
-        let fs = RestrictedFs::new(&conf.path, conf.show_hidden, conf.no_symlinks);
+        let fs = RestrictedFs::new(
+            &conf.path,
+            conf.show_hidden,
+            conf.no_symlinks,
+            conf.path_filter.clone(),
+        );
 
         let dav_server = DavHandler::builder()
             .filesystem(fs)
@@ -508,18 +556,35 @@ async fn api(
                     .decode_utf8()
                     .map_err(|e| RuntimeError::ParseError(path.clone(), e.to_string()))?;
 
-                // Convert the relative dir to an absolute path on the system.
-                let sanitized_path = file_utils::sanitize_path(&*decoded_path, true)
-                    .expect("Expected a path to directory");
+                let stripped_path = decoded_path
+                    .strip_prefix(&config.route_prefix)
+                    .unwrap_or(&decoded_path);
 
-                let full_path = config
+                // Convert the relative dir to an absolute path on the system.
+                let sanitized_path = file_utils::sanitize_path(stripped_path, config.show_hidden)
+                    .ok_or_else(|| {
+                    RuntimeError::InvalidPathError("Invalid path to directory".to_string())
+                })?;
+
+                let root_path = config
                     .path
                     .canonicalize()
-                    .expect("Couldn't canonicalize path")
-                    .join(sanitized_path);
+                    .expect("Couldn't canonicalize path");
+                let full_path = root_path.join(&sanitized_path);
+
+                if config.path_filter.dir_state(&sanitized_path)
+                    == crate::path_filter::PathState::Denied
+                    || !config
+                        .path_filter
+                        .check_canonical_target(&root_path, &full_path)
+                {
+                    return Err(RuntimeError::RouteNotFoundError(path));
+                }
+
                 info!("Requested directory listing for {full_path:?}");
 
-                let dir_size = recursive_dir_size(&full_path).await?;
+                let dir_size =
+                    recursive_dir_size(&root_path, &full_path, &config.path_filter).await?;
                 if config.show_exact_bytes {
                     Ok(format!("{dir_size} B"))
                 } else {

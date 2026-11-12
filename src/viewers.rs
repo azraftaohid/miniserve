@@ -314,6 +314,9 @@ fn classify_viewer_target(path: &Path, conf: &MiniserveConfig) -> Option<ViewerK
 /// (when `conf.no_symlinks`), or does not point to an existing regular file.
 fn resolve_target_file(req: &HttpRequest, conf: &MiniserveConfig) -> Option<(PathBuf, Metadata)> {
     if conf.path.is_file() {
+        if !conf.path_filter.is_file_allowed(Path::new("")) {
+            return None;
+        }
         let req_path = req.path();
         let stripped = req_path
             .strip_prefix(&conf.route_prefix)
@@ -335,12 +338,24 @@ fn resolve_target_file(req: &HttpRequest, conf: &MiniserveConfig) -> Option<(Pat
         return None;
     }
 
+    if !conf.path_filter.is_file_allowed(&sanitized) {
+        return None;
+    }
+
     let mut full_path = conf.path.clone();
     for component in sanitized.components() {
         full_path.push(component);
         if conf.no_symlinks && full_path.is_symlink() {
             return None;
         }
+    }
+
+    let canon_root = conf.path.canonicalize().ok()?;
+    if !conf
+        .path_filter
+        .check_canonical_target(&canon_root, &full_path)
+    {
+        return None;
     }
 
     let metadata = std::fs::metadata(&full_path).ok()?;
