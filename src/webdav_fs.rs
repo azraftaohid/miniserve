@@ -17,40 +17,80 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 use tokio::fs;
 
+use crate::path_filter::{PathFilter, PathState};
+
 /// A dav_server local filesystem backend that can be configured to deny access
-/// to files and directories with names starting with a dot.
+/// to files and directories with names starting with a dot or matching PathFilter.
 #[derive(Clone)]
 pub struct RestrictedFs {
     local: Box<LocalFs>,
     base_path: PathBuf,
+    canon_base: PathBuf,
     show_hidden: bool,
     no_symlinks: bool,
+    path_filter: PathFilter,
 }
 
 impl RestrictedFs {
     /// Creates a new RestrictedFs serving the local path at "base".
     /// If "show_hidden" is false, access to hidden files is prevented.
     /// If "no_symlinks" is true, access to symlinks is prevented.
-    pub fn new<P: AsRef<Path>>(base: P, show_hidden: bool, no_symlinks: bool) -> Box<RestrictedFs> {
+    pub fn new<P: AsRef<Path>>(
+        base: P,
+        show_hidden: bool,
+        no_symlinks: bool,
+        path_filter: PathFilter,
+    ) -> Box<RestrictedFs> {
         let base_path = base.as_ref().to_path_buf();
+        let canon_base = base_path
+            .canonicalize()
+            .unwrap_or_else(|_| base_path.clone());
         let local = LocalFs::new(base, false, false, false);
         Box::new(RestrictedFs {
             local,
             base_path,
+            canon_base,
             show_hidden,
             no_symlinks,
+            path_filter,
         })
     }
 
-    /// true if the path is allowed to appear in responses (not hidden and/or not a symlink, depending on flags)
-    async fn is_path_allowed(&self, path: &DavPath) -> bool {
+    /// true if the path is allowed to appear in responses (not hidden, not a symlink, and allowed by path_filter)
+    async fn is_path_allowed(&self, path: &DavPath, for_open: bool) -> bool {
         if self.no_symlinks && path_has_symlink_components(path, &self.base_path).await {
             return false;
         }
         if !self.show_hidden && path_has_hidden_components(path) {
             return false;
         }
-        true
+        if self.path_filter.is_none() {
+            return true;
+        }
+        let rel = path.as_rel_ospath();
+        let full = self.base_path.join(rel);
+        if !self
+            .path_filter
+            .check_canonical_target(&self.canon_base, &full)
+        {
+            return false;
+        }
+        let is_dir = fs::metadata(&full)
+            .await
+            .map(|m| m.is_dir())
+            .unwrap_or(false);
+        if is_dir {
+            let state = self
+                .path_filter
+                .effective_dir_state(&self.canon_base, &full, rel);
+            if for_open {
+                state == PathState::Allowed
+            } else {
+                state != PathState::Denied
+            }
+        } else {
+            self.path_filter.is_file_allowed(rel)
+        }
     }
 }
 
@@ -90,7 +130,7 @@ impl DavFileSystem for RestrictedFs {
         options: DavOpenOptions,
     ) -> DavFsFuture<'a, Box<dyn DavFile>> {
         Box::pin(async move {
-            if !self.is_path_allowed(path).await {
+            if !self.is_path_allowed(path, true).await {
                 Err(DavFsError::NotFound)
             } else {
                 self.local.open(path, options).await
@@ -104,40 +144,62 @@ impl DavFileSystem for RestrictedFs {
         meta: DavReadDirMeta,
     ) -> DavFsFuture<'a, DavFsStream<Box<dyn DavDirEntry>>> {
         Box::pin(async move {
-            if !self.is_path_allowed(path).await {
+            if !self.is_path_allowed(path, false).await {
                 return Err(DavFsError::NotFound);
             }
 
-            if self.show_hidden && !self.no_symlinks {
+            if self.show_hidden && !self.no_symlinks && self.path_filter.is_none() {
                 return self.local.read_dir(path, meta).await;
             }
 
-            let dav_path = path.as_rel_ospath();
-            let base_path = self.base_path.join(dav_path);
+            let dav_path = path.as_rel_ospath().to_path_buf();
+            let base_path = self.base_path.join(&dav_path);
+            let canon_base = self.canon_base.clone();
             let show_hidden = self.show_hidden;
             let no_symlinks = self.no_symlinks;
+            let path_filter = self.path_filter.clone();
 
             let stream = self.local.read_dir(path, meta).await?;
 
             let filtered = stream.filter_map(move |entry_res| {
                 let base_path = base_path.clone();
+                let canon_base = canon_base.clone();
+                let dav_path = dav_path.clone();
+                let path_filter = path_filter.clone();
                 async move {
                     match entry_res {
                         Ok(e) => {
                             if !show_hidden && e.name().starts_with(b".") {
                                 return None;
                             }
-                            if no_symlinks {
-                                let name = e.name();
-                                #[cfg(not(target_os = "windows"))]
-                                let os_string = OsStr::from_bytes(&name);
-                                #[cfg(target_os = "windows")]
-                                let os_string: &OsStr =
-                                    std::str::from_utf8(&name).unwrap().as_ref();
-                                let entry_path = base_path.join(os_string);
-                                if let Ok(md) = fs::symlink_metadata(&entry_path).await
-                                    && md.file_type().is_symlink()
-                                {
+                            let name = e.name();
+                            #[cfg(not(target_os = "windows"))]
+                            let os_string = OsStr::from_bytes(&name);
+                            #[cfg(target_os = "windows")]
+                            let os_string: &OsStr = std::str::from_utf8(&name).unwrap().as_ref();
+                            let entry_path = base_path.join(os_string);
+
+                            if no_symlinks
+                                && let Ok(md) = fs::symlink_metadata(&entry_path).await
+                                && md.file_type().is_symlink()
+                            {
+                                return None;
+                            }
+
+                            if !path_filter.is_none() {
+                                if !path_filter.check_canonical_target(&canon_base, &entry_path) {
+                                    return None;
+                                }
+                                let rel_entry = dav_path.join(os_string);
+                                let is_dir = fs::metadata(&entry_path)
+                                    .await
+                                    .map(|m| m.is_dir())
+                                    .unwrap_or(false);
+                                if is_dir {
+                                    if path_filter.dir_state(&rel_entry) == PathState::Denied {
+                                        return None;
+                                    }
+                                } else if !path_filter.is_file_allowed(&rel_entry) {
                                     return None;
                                 }
                             }
@@ -154,7 +216,7 @@ impl DavFileSystem for RestrictedFs {
 
     fn metadata<'a>(&'a self, path: &'a DavPath) -> DavFsFuture<'a, Box<dyn DavMetaData>> {
         Box::pin(async move {
-            if !self.is_path_allowed(path).await {
+            if !self.is_path_allowed(path, false).await {
                 Err(DavFsError::NotFound)
             } else {
                 self.local.metadata(path).await
@@ -164,7 +226,7 @@ impl DavFileSystem for RestrictedFs {
 
     fn symlink_metadata<'a>(&'a self, path: &'a DavPath) -> DavFsFuture<'a, Box<dyn DavMetaData>> {
         Box::pin(async move {
-            if !self.is_path_allowed(path).await {
+            if !self.is_path_allowed(path, false).await {
                 Err(DavFsError::NotFound)
             } else {
                 self.local.symlink_metadata(path).await

@@ -515,6 +515,53 @@ pub struct CliArgs {
         default_value = "auto"
     )]
     pub log_color: LogColor,
+
+    /// Exclude specific relative path prefixes from being served or listed
+    ///
+    /// Can be specified multiple times. Paths are matched lexically, case-sensitively, and relative
+    /// to the served root directory (e.g., `--exclude /abc/def` or `--exclude abc/def`). Cannot be
+    /// used together with `--ignore-file`.
+    #[arg(
+        long = "exclude",
+        value_hint = ValueHint::AnyPath,
+        num_args = 1,
+        action = clap::ArgAction::Append,
+        conflicts_with = "ignore_file",
+        env = "MINISERVE_EXCLUDE",
+        value_delimiter = ','
+    )]
+    pub exclude: Vec<PathBuf>,
+
+    /// Explicitly include specific relative path prefixes underneath an excluded path
+    ///
+    /// Can be specified multiple times and requires `--exclude`. Intermediate parent directories
+    /// leading to an included path will be navigable as pass-through directories (listing only
+    /// allowed subdirectories, while keeping sibling files and folders hidden). Cannot be used
+    /// together with `--ignore-file`.
+    #[arg(
+        long = "include",
+        value_hint = ValueHint::AnyPath,
+        num_args = 1,
+        action = clap::ArgAction::Append,
+        requires = "exclude",
+        conflicts_with = "ignore_file",
+        env = "MINISERVE_INCLUDE",
+        value_delimiter = ','
+    )]
+    pub include: Vec<PathBuf>,
+
+    /// Path to a .gitignore-style file specifying patterns to exclude or re-include (!)
+    ///
+    /// Patterns are matched case-sensitively relative to the served root directory, and negated (`!`)
+    /// rules can re-include subpaths underneath excluded parent directories. Cannot be used together
+    /// with `--exclude` or `--include`.
+    #[arg(
+        long = "ignore-file",
+        value_hint = ValueHint::FilePath,
+        conflicts_with_all = ["exclude", "include"],
+        env = "MINISERVE_IGNORE_FILE"
+    )]
+    pub ignore_file: Option<PathBuf>,
 }
 
 /// Checks whether an interface is valid, i.e. it can be parsed into an IP address

@@ -31,6 +31,7 @@ pub fn page(
     query_params: ListingQueryParameters,
     breadcrumbs: &[Breadcrumb],
     encoded_dir: &str,
+    rel_dir: &std::path::Path,
     conf: &MiniserveConfig,
     current_user: Option<&CurrentUser>,
 ) -> Markup {
@@ -53,16 +54,31 @@ pub fn page(
 
     let title_path = breadcrumbs_to_path_string(breadcrumbs);
 
-    let upload_allowed = conf.allowed_upload_dir.is_empty()
-        || conf
-            .allowed_upload_dir
-            .iter()
-            .any(|x| encoded_dir.starts_with(&format!("/{x}")));
-    let rm_allowed = conf.allowed_rm_dir.is_empty()
-        || conf
-            .allowed_rm_dir
-            .iter()
-            .any(|x| encoded_dir.starts_with(&format!("/{x}")));
+    let canon_root = conf
+        .path
+        .canonicalize()
+        .unwrap_or_else(|_| conf.path.clone());
+    let current_dir_disk = conf.path.join(rel_dir);
+    let is_dir_allowed =
+        conf.path_filter
+            .effective_dir_state(&canon_root, &current_dir_disk, rel_dir)
+            == crate::path_filter::PathState::Allowed;
+    let can_archive =
+        conf.path_filter
+            .effective_can_archive_dir(&canon_root, &current_dir_disk, rel_dir);
+
+    let upload_allowed = is_dir_allowed
+        && (conf.allowed_upload_dir.is_empty()
+            || conf
+                .allowed_upload_dir
+                .iter()
+                .any(|x| encoded_dir.starts_with(&format!("/{x}"))));
+    let rm_allowed = is_dir_allowed
+        && (conf.allowed_rm_dir.is_empty()
+            || conf
+                .allowed_rm_dir
+                .iter()
+                .any(|x| encoded_dir.starts_with(&format!("/{x}"))));
 
     // OR with other conditions in the future if more actions are added
     let show_actions = conf.rm_enabled && rm_allowed;
@@ -122,7 +138,7 @@ pub fn page(
                         }
                     }
                     div.toolbar {
-                        @if conf.tar_enabled || conf.tar_gz_enabled || conf.zip_enabled {
+                        @if can_archive && (conf.tar_enabled || conf.tar_gz_enabled || conf.zip_enabled) {
                             div.tool_row.download_tools {
                                 div.tool data-tool="download" {
                                     @for archive_method in ArchiveMethod::iter() {
@@ -193,7 +209,15 @@ pub fn page(
                                 }
                             }
                             @for entry in entries {
-                                (entry_row(entry, sort_method, sort_order, false, search, conf.show_exact_bytes, actions_conf, &conf.route_prefix))
+                                @let entry_rel = rel_dir.join(&entry.name);
+                                @let entry_disk = current_dir_disk.join(&entry.name);
+                                @let entry_can_delete = show_actions && conf.path_filter.effective_can_delete_path(
+                                    &canon_root,
+                                    &entry_disk,
+                                    &entry_rel,
+                                    entry.is_dir(),
+                                );
+                                (entry_row(entry, sort_method, sort_order, false, search, conf.show_exact_bytes, actions_conf, entry_can_delete, &conf.route_prefix))
                             }
                         }
                     }
@@ -287,7 +311,7 @@ pub fn raw(
                             }
                         }
                         @for entry in entries {
-                            (entry_row(entry, None, None, true, search, conf.show_exact_bytes, None, &conf.route_prefix))
+                            (entry_row(entry, None, None, true, search, conf.show_exact_bytes, None, false, &conf.route_prefix))
                         }
                     }
                 }
@@ -748,6 +772,7 @@ fn entry_row(
     search: Option<&str>,
     show_exact_bytes: bool,
     actions_conf: Option<ActionsConf>,
+    can_delete: bool,
     route_prefix: &str,
 ) -> Markup {
     html! {
@@ -824,7 +849,9 @@ fn entry_row(
             }
             @if let Some(conf) = actions_conf {
                 td.actions-cell {
-                    (rm_form(conf.rm_route, &entry.link, route_prefix))
+                    @if can_delete {
+                        (rm_form(conf.rm_route, &entry.link, route_prefix))
+                    }
                 }
             }
         }

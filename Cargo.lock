@@ -2137,6 +2137,7 @@ dependencies = [
  "fake-tty",
  "fast_qr",
  "futures",
+ "globset",
  "hex",
  "httparse",
  "if-addrs",

@@ -10,9 +10,6 @@ use std::os::unix::fs::MetadataExt;
 
 use std::path::{Component, Path, PathBuf};
 
-#[cfg(target_family = "unix")]
-use std::sync::Arc;
-
 use actix_web::{HttpRequest, HttpResponse, http::header, web};
 use async_walkdir::WalkDir;
 use futures::{StreamExt, TryStreamExt};
@@ -23,9 +20,6 @@ use sha2::{Digest, Sha256, Sha512};
 use tempfile::NamedTempFile;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
-
-#[cfg(target_family = "unix")]
-use tokio::sync::RwLock;
 
 use crate::{
     args::DuplicateFile, config::MiniserveConfig, errors::RuntimeError,
@@ -58,47 +52,86 @@ impl FileHash {
 /// Counts hardlinked files only once if the OS supports hardlinks.
 ///
 /// Expects `dir` to be sanitized. This function doesn't do any sanitization itself.
-pub async fn recursive_dir_size(dir: &Path) -> Result<u64, RuntimeError> {
+pub async fn recursive_dir_size(
+    root_dir: &Path,
+    dir: &Path,
+    path_filter: &crate::path_filter::PathFilter,
+) -> Result<u64, RuntimeError> {
     #[cfg(target_family = "unix")]
-    let seen_inodes = Arc::new(RwLock::new(HashSet::new()));
+    let mut seen_inodes = HashSet::new();
 
-    let mut entries = WalkDir::new(dir);
+    let Ok(initial_rel) = dir.strip_prefix(root_dir) else {
+        return Ok(0);
+    };
+    if path_filter.dir_state(initial_rel) == crate::path_filter::PathState::Denied
+        || !path_filter.check_canonical_target(root_dir, dir)
+    {
+        return Ok(0);
+    }
 
+    let mut queue = vec![dir.to_path_buf()];
     let mut total_size = 0;
-    loop {
-        match entries.next().await {
-            Some(Ok(entry)) => {
-                if let Ok(metadata) = entry.metadata().await
-                    && metadata.is_file()
-                {
-                    // On Unix, we want to filter inodes that we've already seen so we get a
-                    // more accurate count of real size used on disk.
-                    #[cfg(target_family = "unix")]
-                    {
-                        let (device_id, inode) = (metadata.dev(), metadata.ino());
 
-                        // Check if this file has been seen before based on its device ID and
-                        // inode number
-                        if seen_inodes.read().await.contains(&(device_id, inode)) {
-                            continue;
-                        } else {
-                            seen_inodes.write().await.insert((device_id, inode));
+    while let Some(current_dir) = queue.pop() {
+        let mut read_dir = match tokio::fs::read_dir(&current_dir).await {
+            Ok(rd) => rd,
+            Err(io_err) => match io_err.kind() {
+                ErrorKind::PermissionDenied => {
+                    warn!(
+                        "Error trying to read directory when calculating dir size: {io_err}, ignoring"
+                    );
+                    continue;
+                }
+                _ => return Err(RuntimeError::InvalidPathError(io_err.to_string())),
+            },
+        };
+
+        loop {
+            match read_dir.next_entry().await {
+                Ok(Some(entry)) => {
+                    let entry_path = entry.path();
+                    let Ok(rel_path) = entry_path.strip_prefix(root_dir) else {
+                        continue;
+                    };
+                    if !path_filter.check_canonical_target(root_dir, &entry_path) {
+                        continue;
+                    }
+                    let Ok(metadata) = entry.metadata().await else {
+                        continue;
+                    };
+
+                    if metadata.is_dir() {
+                        if path_filter.dir_state(rel_path) != crate::path_filter::PathState::Denied
+                        {
+                            queue.push(entry_path);
                         }
+                    } else if metadata.is_file() {
+                        if !path_filter.is_file_allowed(rel_path) {
+                            continue;
+                        }
+                        // On Unix, we want to filter inodes that we've already seen so we get a
+                        // more accurate count of real size used on disk.
+                        #[cfg(target_family = "unix")]
+                        {
+                            let (device_id, inode) = (metadata.dev(), metadata.ino());
+                            if !seen_inodes.insert((device_id, inode)) {
+                                continue;
+                            }
+                        }
+                        total_size += metadata.len();
                     }
-                    total_size += metadata.len();
                 }
-            }
-            Some(Err(e)) => {
-                if let Some(io_err) = e.into_io() {
-                    match io_err.kind() {
-                        ErrorKind::PermissionDenied => warn!(
-                            "Error trying to read file when calculating dir size: {io_err}, ignoring"
-                        ),
-                        _ => return Err(RuntimeError::InvalidPathError(io_err.to_string())),
+                Ok(None) => break,
+                Err(io_err) => match io_err.kind() {
+                    ErrorKind::PermissionDenied => {
+                        warn!(
+                            "Error trying to read entry when calculating dir size: {io_err}, ignoring"
+                        );
+                        break;
                     }
-                }
+                    _ => return Err(RuntimeError::InvalidPathError(io_err.to_string())),
+                },
             }
-            None => break,
         }
     }
     Ok(total_size)
@@ -111,11 +144,17 @@ pub async fn recursive_dir_size(dir: &Path) -> Result<u64, RuntimeError> {
 async fn save_file(
     field: &mut actix_multipart::Field,
     mut file_path: PathBuf,
-    on_duplicate_files: DuplicateFile,
-    file_checksum: Option<&FileHash>,
-    temporary_upload_directory: Option<&PathBuf>,
+    opts: &HandleMultipartOpts<'_>,
     #[cfg(unix)] chmod: u16,
 ) -> Result<u64, RuntimeError> {
+    let HandleMultipartOpts {
+        on_duplicate_files,
+        file_hash,
+        upload_directory: temporary_upload_directory,
+        app_root_dir,
+        path_filter,
+        ..
+    } = *opts;
     if file_path.exists() {
         match on_duplicate_files {
             DuplicateFile::Error => return Err(RuntimeError::DuplicateFileError),
@@ -140,6 +179,24 @@ async fn save_file(
                     }
                 }
             }
+        }
+    }
+
+    let rel_final = file_path
+        .strip_prefix(app_root_dir)
+        .map_err(|_| RuntimeError::UploadForbiddenError)?;
+    if !path_filter.is_file_allowed(rel_final)
+        || !path_filter.check_canonical_target(app_root_dir, &file_path)
+    {
+        return Err(RuntimeError::UploadForbiddenError);
+    }
+    if let (Some(parent), Some(fname)) = (file_path.parent(), file_path.file_name())
+        && let Ok(canon_parent) = parent.canonicalize()
+        && let Ok(canon_parent_rel) = canon_parent.strip_prefix(app_root_dir)
+    {
+        let canon_rel_final = canon_parent_rel.join(fname);
+        if !path_filter.is_file_allowed(&canon_rel_final) {
+            return Err(RuntimeError::UploadForbiddenError);
         }
     }
 
@@ -184,7 +241,7 @@ async fn save_file(
     let mut temp_file = tokio::fs::File::from_std(file);
 
     let mut written_len = 0;
-    let mut hasher = file_checksum.as_ref().map(|h| h.get_hasher());
+    let mut hasher = file_hash.as_ref().map(|h| h.get_hasher());
     let mut save_upload_file_error: Option<RuntimeError> = None;
 
     // This while loop take a stream (in this case `field`) and awaits
@@ -239,7 +296,7 @@ async fn save_file(
     // Therefore, we are relying on the fact that the web UI uploads a
     // hash of the file to determine if it was completed uploaded or not.
     if let Some(hasher) = hasher
-        && let Some(expected_hash) = file_checksum.as_ref().map(|f| f.get_hash())
+        && let Some(expected_hash) = file_hash.as_ref().map(|f| f.get_hash())
     {
         let actual_hash = hex::encode(hasher.finalize());
         if actual_hash != expected_hash {
@@ -302,6 +359,8 @@ struct HandleMultipartOpts<'a> {
     allow_symlinks: bool,
     file_hash: Option<&'a FileHash>,
     upload_directory: Option<&'a PathBuf>,
+    app_root_dir: &'a Path,
+    path_filter: &'a crate::path_filter::PathFilter,
 }
 
 /// Handles a single field in a multipart form
@@ -312,12 +371,12 @@ async fn handle_multipart(
     #[cfg(unix)] chmod: u16,
 ) -> Result<u64, RuntimeError> {
     let HandleMultipartOpts {
-        on_duplicate_files,
         allow_mkdir,
         allow_hidden_paths,
         allow_symlinks,
-        file_hash,
-        upload_directory,
+        app_root_dir,
+        path_filter,
+        ..
     } = opts;
     let field_name = field.name().expect("No name field found").to_string();
 
@@ -340,7 +399,6 @@ async fn handle_multipart(
         }
 
         let mut user_given_path = PathBuf::new();
-        let mut absolute_path = path.clone();
 
         // Get the path the user gave
         let mkdir_path_bytes = field.try_next().await;
@@ -353,7 +411,6 @@ async fn handle_multipart(
                     )
                 })?;
                 let mkdir_path = mkdir_path.replace('\\', "/");
-                absolute_path.push(&mkdir_path);
                 user_given_path.push(&mkdir_path);
             }
             _ => {
@@ -373,10 +430,17 @@ async fn handle_multipart(
                 "Cannot use '..' in mkdir path".to_string(),
             ));
         }
-        // Hidden paths check
-        sanitize_path(&user_given_path, allow_hidden_paths).ok_or_else(|| {
+        // Hidden paths check and sanitize
+        let clean_mkdir = sanitize_path(&user_given_path, allow_hidden_paths).ok_or_else(|| {
             RuntimeError::InvalidPathError("Cannot use hidden paths in mkdir path".to_string())
         })?;
+        if clean_mkdir.as_os_str().is_empty() {
+            return Err(RuntimeError::InvalidPathError(
+                "Empty mkdir path".to_string(),
+            ));
+        }
+
+        let absolute_path = path.join(&clean_mkdir);
 
         // Ensure there are no illegal symlinks
         if !allow_symlinks {
@@ -386,6 +450,21 @@ async fn handle_multipart(
                     "{user_given_path:?} traverses through a symlink"
                 )))?,
                 Ok(false) => (),
+            }
+        }
+
+        let rel_mkdir_path = absolute_path
+            .strip_prefix(app_root_dir)
+            .map_err(|_| RuntimeError::UploadForbiddenError)?;
+        if path_filter.dir_state(rel_mkdir_path) != crate::path_filter::PathState::Allowed {
+            return Err(RuntimeError::UploadForbiddenError);
+        }
+        if let Ok(canon_parent) = path.canonicalize()
+            && let Ok(canon_parent_rel) = canon_parent.strip_prefix(app_root_dir)
+        {
+            let canon_mkdir_rel = canon_parent_rel.join(&clean_mkdir);
+            if path_filter.dir_state(canon_mkdir_rel) != crate::path_filter::PathState::Allowed {
+                return Err(RuntimeError::UploadForbiddenError);
             }
         }
 
@@ -414,6 +493,11 @@ async fn handle_multipart(
 
     let filename_path = sanitize_path(Path::new(&filename), allow_hidden_paths)
         .ok_or_else(|| RuntimeError::InvalidPathError("Invalid file name to upload".to_string()))?;
+    if filename_path.as_os_str().is_empty() {
+        return Err(RuntimeError::InvalidPathError(
+            "Invalid file name to upload".to_string(),
+        ));
+    }
 
     // Ensure there are no illegal symlinks in the file upload path
     if !allow_symlinks {
@@ -426,12 +510,23 @@ async fn handle_multipart(
         }
     }
 
+    let dest_path = path.join(filename_path);
+    let rel_file_path = dest_path
+        .strip_prefix(app_root_dir)
+        .map_err(|_| RuntimeError::UploadForbiddenError)?;
+    if !path_filter.is_file_allowed(rel_file_path) {
+        return Err(RuntimeError::UploadForbiddenError);
+    }
+    if let Some(parent) = rel_file_path.parent()
+        && path_filter.dir_state(parent) != crate::path_filter::PathState::Allowed
+    {
+        return Err(RuntimeError::UploadForbiddenError);
+    }
+
     save_file(
         &mut field,
-        path.join(filename_path),
-        on_duplicate_files,
-        file_hash,
-        upload_directory,
+        dest_path,
+        &opts,
         #[cfg(unix)]
         chmod,
     )
@@ -463,11 +558,13 @@ pub async fn upload_file(
     })?;
 
     // Disallow paths outside of allowed directories
-    let upload_allowed = conf.allowed_upload_dir.is_empty()
-        || conf
-            .allowed_upload_dir
-            .iter()
-            .any(|s| upload_path.starts_with(s));
+    let upload_allowed = conf.path_filter.dir_state(&upload_path)
+        == crate::path_filter::PathState::Allowed
+        && (conf.allowed_upload_dir.is_empty()
+            || conf
+                .allowed_upload_dir
+                .iter()
+                .any(|s| upload_path.starts_with(s)));
 
     if !upload_allowed {
         return Err(RuntimeError::UploadForbiddenError);
@@ -477,13 +574,19 @@ pub async fn upload_file(
     // The target directory shouldn't be canonicalized when it gets passed to
     // handle_multipart so that it can check for symlinks if needed
     let non_canonicalized_target_dir = app_root_dir.join(upload_path);
-    match non_canonicalized_target_dir.canonicalize() {
+    let canon_target = match non_canonicalized_target_dir.canonicalize() {
         Ok(path) if !conf.no_symlinks => Ok(path),
         Ok(path) if path.starts_with(&app_root_dir) => Ok(path),
         _ => Err(RuntimeError::InvalidHttpRequestError(
             "Invalid value for 'path' parameter".to_string(),
         )),
     }?;
+
+    if let Ok(canon_rel) = canon_target.strip_prefix(&app_root_dir)
+        && conf.path_filter.dir_state(canon_rel) != crate::path_filter::PathState::Allowed
+    {
+        return Err(RuntimeError::UploadForbiddenError);
+    }
 
     let upload_directory = conf.temp_upload_directory.as_ref();
 
@@ -522,6 +625,8 @@ pub async fn upload_file(
                     allow_symlinks: !conf.no_symlinks,
                     file_hash: hash_ref,
                     upload_directory,
+                    app_root_dir: &app_root_dir,
+                    path_filter: &conf.path_filter,
                 },
                 #[cfg(unix)]
                 conf.upload_chmod,
@@ -567,6 +672,11 @@ pub async fn rm_file(
         return Err(RuntimeError::RmForbiddenError);
     }
 
+    let is_dir = app_root_dir.join(&rm_path).is_dir();
+    if !conf.path_filter.can_delete_path(&rm_path, is_dir) {
+        return Err(RuntimeError::RmForbiddenError);
+    }
+
     // Disallow the target path to go outside of the served directory
     let canonicalized_rm_path = match app_root_dir.join(&rm_path).canonicalize() {
         Ok(path) if !conf.no_symlinks => Ok(path),
@@ -576,11 +686,43 @@ pub async fn rm_file(
         )),
     }?;
 
+    if let Ok(canon_rel) = canonicalized_rm_path.strip_prefix(&app_root_dir)
+        && !conf
+            .path_filter
+            .can_delete_path(canon_rel, canonicalized_rm_path.is_dir())
+    {
+        return Err(RuntimeError::RmForbiddenError);
+    }
+
     // Handle non-existent path
     if !canonicalized_rm_path.exists() {
         return Err(RuntimeError::RouteNotFoundError(format!(
             "{rm_path:?} does not exist"
         )));
+    }
+
+    if canonicalized_rm_path.is_dir() && !conf.path_filter.is_none() {
+        let mut entries = WalkDir::new(&canonicalized_rm_path);
+        while let Some(entry_res) = entries.next().await {
+            let entry = entry_res.map_err(|_| RuntimeError::RmForbiddenError)?;
+            let entry_path = entry.path();
+            let rel = entry_path
+                .strip_prefix(&app_root_dir)
+                .map_err(|_| RuntimeError::RmForbiddenError)?;
+            let is_dir = entry.metadata().await.map(|m| m.is_dir()).unwrap_or(false);
+            let allowed = if is_dir {
+                conf.path_filter.dir_state(rel) == crate::path_filter::PathState::Allowed
+            } else {
+                conf.path_filter.is_file_allowed(rel)
+            };
+            if !allowed
+                || !conf
+                    .path_filter
+                    .check_canonical_target(&app_root_dir, &entry_path)
+            {
+                return Err(RuntimeError::RmForbiddenError);
+            }
+        }
     }
 
     // Remove
