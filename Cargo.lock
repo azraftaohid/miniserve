@@ -2114,7 +2114,7 @@ dependencies = [
 
 [[package]]
 name = "miniserve"
-version = "0.35.0-azraftaohid.4"
+version = "0.35.0-azraftaohid.5"
 dependencies = [
  "actix-files",
  "actix-multipart",

@@ -30,6 +30,7 @@ This repository is a customized fork of [svenstaro/miniserve](https://github.com
 | **Markdown** | Directory README only | Standalone `.md` rendering with GFM, native MathML LaTeX math (`$...$`, `$$...$$`, `\(...\)`, `\[...\]`, ```` ```math ````), task lists, footnotes, and syntax highlighting |
 | **PDF** | Download as attachment | Native inline browser viewing |
 | **Code & Text** | Raw, unstyled text | Syntax highlighting, line numbers, and `#L1` deep links |
+| **Path Filtering** | Not supported | Hierarchical `--exclude` / `--include` path prefixes or `.gitignore`-style `--ignore-file` rules across listings, viewers, archives, WebDAV, uploads, and deletions |
 | **Container Images** | Docker Hub | Multi-architecture GHCR images with pinned release tags |
 
 ### Quick Start
@@ -204,6 +205,20 @@ You can pass a `?search=<keyword>` query parameter to only show files and direct
 
 This filter feature is case insensitive.
 
+### Exclude or selectively include paths
+
+You can hide subtrees with `--exclude` and optionally re-include nested subpaths with `--include`:
+
+    miniserve --exclude /private --include /private/shared/docs my-files/
+
+Intermediate parent directories (`/private`, `/private/shared`) remain browsable as pass-through folders showing only the allowed path toward `/private/shared/docs`, while keeping sibling files and folders hidden across listings, downloads, archives, viewers, WebDAV, uploads, and deletions.
+
+Alternatively, load `.gitignore`-style rules from a file using `--ignore-file`:
+
+    miniserve --ignore-file .miniserveignore my-files/
+
+Note that `--ignore-file` cannot be combined with `--exclude` or `--include`.
+
 ### Take pictures and upload them from smartphones:
 
     miniserve -u -m image -q
@@ -219,6 +234,7 @@ Some mobile browsers like Firefox on Android will offer to open the camera app w
 - Authentication support with username and password (and hashed password)
 - Mega fast and highly parallel (thanks to [Rust](https://www.rust-lang.org/) and [Actix](https://actix.rs/))
 - Search/filter by file or directory name
+- Path exclusion and selective sub-path re-inclusion (`--exclude`, `--include`, `--ignore-file`)
 - Folder download (compressed on the fly as `.tar.gz` or `.zip`)
 - File uploading
 - Directory creation
@@ -625,6 +641,33 @@ Options:
           [env: MINISERVE_LOG_COLOR=]
           [default: auto]
           [possible values: auto, always, never]
+
+      --exclude <EXCLUDE>
+          Exclude specific relative path prefixes from being served, listed, or archived
+
+          Can be specified multiple times. Paths are matched lexically, case-sensitively, and relative to the served root directory (e.g.,
+          `--exclude /abc/def` or `--exclude abc/def`). Excluded entries are omitted from directory listings and archive downloads (`tar`,
+          `tar.gz`, `zip`). Cannot be used together with `--ignore-file`.
+
+          [env: MINISERVE_EXCLUDE=]
+
+      --include <INCLUDE>
+          Explicitly include specific relative path prefixes underneath an excluded path
+
+          Can be specified multiple times and requires `--exclude`. Intermediate parent directories leading to an included path will be
+          navigable as pass-through directories (listing and archiving only allowed subdirectories, while keeping sibling files and folders
+          hidden). Cannot be used together with `--ignore-file`.
+
+          [env: MINISERVE_INCLUDE=]
+
+      --ignore-file <IGNORE_FILE>
+          Path to a .gitignore-style file specifying patterns to exclude or re-include (!)
+
+          Patterns are matched case-sensitively relative to the served root directory, and negated (`!`) rules can re-include subpaths
+          underneath excluded parent directories. Excluded entries are omitted from directory listings and archive downloads (`tar`, `tar.gz`,
+          `zip`). Cannot be used together with `--exclude` or `--include`.
+
+          [env: MINISERVE_IGNORE_FILE=]
 
   -h, --help
           Print help (see a summary with '-h')
