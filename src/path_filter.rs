@@ -30,9 +30,8 @@ pub struct IgnoreRule {
     ancestor_dir_matchers: Vec<GlobMatcher>,
     is_include: bool,
     dir_only: bool,
-    has_wildcard: bool,
     /// For anchored rules without wildcards in the first segment, stores the leading literal
-    /// prefix so `can_archive_dir` and `can_delete_path` can determine affected subtrees.
+    /// prefix so `can_delete_path` can determine affected subtrees.
     anchored_prefix: Option<PathBuf>,
 }
 
@@ -232,7 +231,6 @@ impl PathFilter {
         // In gitignore, a pattern with no slash (after stripping trailing slash) can match at any depth,
         // whereas a pattern with a leading or internal slash is anchored to the root.
         let anchored = normalized.starts_with('/') || stripped.contains('/');
-        let has_wildcard = contains_glob_metachar(stripped);
 
         let glob_expr = if anchored {
             stripped.to_string()
@@ -303,7 +301,6 @@ impl PathFilter {
             ancestor_dir_matchers,
             is_include,
             dir_only,
-            has_wildcard,
             anchored_prefix,
         }))
     }
@@ -538,94 +535,18 @@ impl PathFilter {
         }
     }
 
-    /// Returns `true` if `rel_dir` can be downloaded as a tar/zip archive.
-    pub fn can_archive_dir(&self, rel_dir: impl AsRef<Path>) -> bool {
-        let norm = normalize_rel_path(rel_dir);
-        if self.dir_state(&norm) != PathState::Allowed {
-            return false;
-        }
-
-        match self {
-            Self::None => true,
-            Self::Prefixes(prefixes) => {
-                for exc in &prefixes.excludes {
-                    if exc.starts_with(&norm) {
-                        let overridden_at_same_path =
-                            prefixes.includes.iter().any(|inc| inc == exc);
-                        if !overridden_at_same_path {
-                            return false;
-                        }
-                    }
-                }
-                true
-            }
-            Self::IgnoreFile(ignore) => {
-                if let Some(ref auto_denied) = ignore.auto_denied
-                    && auto_denied.starts_with(&norm)
-                {
-                    return false;
-                }
-                for rule in &ignore.rules {
-                    if rule.is_include {
-                        continue;
-                    }
-                    match &rule.anchored_prefix {
-                        Some(exc_prefix) => {
-                            if exc_prefix.starts_with(&norm) {
-                                // An exact literal exclude at or underneath `norm` might have been
-                                // fully overridden at the exact same prefix by a later include rule.
-                                let exc_str = exc_prefix.to_string_lossy();
-                                let re_included = !rule.has_wildcard
-                                    && Self::eval_ignore_rules_single(
-                                        &ignore.rules,
-                                        &exc_str,
-                                        true,
-                                    ) == PathState::Allowed
-                                    && Self::eval_ignore_rules_single(
-                                        &ignore.rules,
-                                        &exc_str,
-                                        false,
-                                    ) == PathState::Allowed;
-                                if !re_included {
-                                    return false;
-                                }
-                            } else if rule.has_wildcard && norm.starts_with(exc_prefix) {
-                                // Wildcard rule anchored above `norm` (e.g. `/abc/*.log`) can
-                                // still exclude files inside `norm`.
-                                return false;
-                            }
-                        }
-                        None => {
-                            // Unanchored exclude rule (e.g. `*.log`) can match inside any directory
-                            return false;
-                        }
-                    }
-                }
-                true
-            }
-        }
-    }
-
-    /// Evaluates `can_archive_dir` for both the lexical path and its canonical target if it
-    /// resolves inside `canon_root`.
+    /// Returns `true` if `rel_dir` can be downloaded as a tar/zip archive (both lexically and
+    /// at its canonical target if it resolves inside `canon_root`).
+    ///
+    /// Any directory that is `Allowed` or `PassThrough` can be archived; excluded entries inside
+    /// it are filtered out during archive creation.
     pub fn effective_can_archive_dir(
         &self,
         canon_root: &Path,
         full_path: &Path,
         rel_dir: impl AsRef<Path>,
     ) -> bool {
-        if !self.can_archive_dir(&rel_dir) {
-            return false;
-        }
-        if self.is_none() {
-            return true;
-        }
-        if let Ok(canon_target) = full_path.canonicalize()
-            && let Ok(canon_rel) = canon_target.strip_prefix(canon_root)
-        {
-            return self.can_archive_dir(canon_rel);
-        }
-        true
+        self.effective_dir_state(canon_root, full_path, rel_dir) != PathState::Denied
     }
 
     /// Returns `true` if `rel_path` is permitted to be deleted via `/rm` based on static rules.
@@ -638,7 +559,18 @@ impl PathFilter {
             }
             match self {
                 Self::None => true,
-                Self::Prefixes(_) => self.can_archive_dir(&norm),
+                Self::Prefixes(prefixes) => {
+                    for exc in &prefixes.excludes {
+                        if exc.starts_with(&norm) {
+                            let overridden_at_same_path =
+                                prefixes.includes.iter().any(|inc| inc == exc);
+                            if !overridden_at_same_path {
+                                return false;
+                            }
+                        }
+                    }
+                    true
+                }
                 Self::IgnoreFile(ignore) => {
                     if let Some(ref auto_denied) = ignore.auto_denied
                         && auto_denied.starts_with(&norm)
@@ -727,12 +659,13 @@ mod tests {
     fn test_can_archive_and_delete() {
         let filter = PathFilter::from_prefixes(&["/abc/def"], &["/abc/def/ghi/jkl"]).unwrap();
 
-        assert!(!filter.can_archive_dir(""));
-        assert!(!filter.can_archive_dir("abc"));
-        assert!(!filter.can_archive_dir("abc/def"));
-        assert!(!filter.can_archive_dir("abc/def/ghi"));
-        assert!(filter.can_archive_dir("abc/def/ghi/jkl"));
-        assert!(filter.can_archive_dir("other_clean_dir"));
+        assert_ne!(filter.dir_state(""), PathState::Denied);
+        assert_ne!(filter.dir_state("abc"), PathState::Denied);
+        assert_ne!(filter.dir_state("abc/def"), PathState::Denied);
+        assert_ne!(filter.dir_state("abc/def/ghi"), PathState::Denied);
+        assert_ne!(filter.dir_state("abc/def/ghi/jkl"), PathState::Denied);
+        assert_ne!(filter.dir_state("other_clean_dir"), PathState::Denied);
+        assert_eq!(filter.dir_state("abc/def/other"), PathState::Denied);
 
         assert!(!filter.can_delete_path("abc", true));
         assert!(!filter.can_delete_path("abc/def", true));
@@ -831,9 +764,12 @@ mod tests {
             let mut f = File::create(&ignore_path).unwrap();
             writeln!(f, "/secret/").unwrap();
         }
+        let canon_dir = dir.path().canonicalize().unwrap();
         let filter = PathFilter::from_ignore_file(&ignore_path, Some(dir.path())).unwrap();
         assert!(!filter.is_file_allowed(".miniserveignore"));
-        assert!(!filter.can_archive_dir(""));
+        assert!(filter.effective_can_archive_dir(&canon_dir, &canon_dir, ""));
+        assert!(!filter.effective_can_archive_dir(&canon_dir, &canon_dir.join("secret"), "secret"));
+        assert!(!filter.can_delete_path("", true));
     }
 
     #[cfg(not(windows))]

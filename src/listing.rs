@@ -474,11 +474,9 @@ pub fn directory_listing(
             path = dir.path.display()
         );
 
-        let file_name = format!(
-            "{}.{}",
-            dir.path.file_name().unwrap().to_str().unwrap(),
-            archive_method.extension()
-        );
+        let folder_name = crate::archive::resolve_archive_root_name(&dir.path)
+            .unwrap_or_else(|_| "archive".to_string());
+        let file_name = format!("{folder_name}.{}", archive_method.extension());
 
         // We will create the archive in a separate thread, and stream the content using a pipe.
         // The pipe is made of a futures channel, and an adapter to implement the `Write` trait.
@@ -487,10 +485,19 @@ pub fn directory_listing(
         let pipe = crate::pipe::Pipe::new(tx);
 
         // Start the actual archive creation in a separate thread.
-        let dir = dir.path.to_path_buf();
+        let dir_to_archive = dir.path.to_path_buf();
+        let rel_dir_clone = rel_dir.clone();
+        let canon_root_clone = canon_root.clone();
         let skip_symlinks = conf.no_symlinks;
+        let path_filter = conf.path_filter.clone();
         std::thread::spawn(move || {
-            if let Err(err) = archive_method.create_archive(dir, skip_symlinks, pipe) {
+            let ctx = crate::archive::ArchiveContext {
+                rel_dir: &rel_dir_clone,
+                canon_root: &canon_root_clone,
+                skip_symlinks,
+                path_filter: &path_filter,
+            };
+            if let Err(err) = archive_method.create_archive(dir_to_archive, ctx, pipe) {
                 log::error!("Error during archive creation: {err:?}");
             }
         });
