@@ -41,6 +41,75 @@ fn create_test_hierarchy(root: &std::path::Path) -> Result<(), Error> {
     Ok(())
 }
 
+fn normalize_archive_entry(raw: &str) -> Option<String> {
+    let cleaned = raw.replace('\\', "/");
+    let trimmed = cleaned.trim_matches('/');
+    let (_, rest) = trimmed.split_once('/')?;
+    let rest = rest.trim_matches('/');
+    (!rest.is_empty()).then(|| rest.to_string())
+}
+
+fn collect_tar_entries(bytes: &[u8]) -> Result<Vec<String>, Error> {
+    let mut archive = tar::Archive::new(std::io::Cursor::new(bytes));
+    let mut names = Vec::new();
+    for entry in archive.entries()? {
+        let entry = entry?;
+        let path_str = entry.path()?.to_string_lossy().into_owned();
+        if let Some(rel) = normalize_archive_entry(&path_str) {
+            names.push(rel);
+        }
+    }
+    Ok(names)
+}
+
+fn collect_tar_gz_entries(bytes: &[u8]) -> Result<Vec<String>, Error> {
+    let decoder = libflate::gzip::Decoder::new(std::io::Cursor::new(bytes))?;
+    let mut archive = tar::Archive::new(decoder);
+    let mut names = Vec::new();
+    for entry in archive.entries()? {
+        let entry = entry?;
+        let path_str = entry.path()?.to_string_lossy().into_owned();
+        if let Some(rel) = normalize_archive_entry(&path_str) {
+            names.push(rel);
+        }
+    }
+    Ok(names)
+}
+
+fn collect_zip_entries(bytes: &[u8]) -> Result<Vec<String>, Error> {
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
+    let mut names = Vec::new();
+    for i in 0..archive.len() {
+        let entry = archive.by_index(i)?;
+        let name = entry.name()?.to_string();
+        if let Some(rel) = normalize_archive_entry(&name) {
+            names.push(rel);
+        }
+    }
+    Ok(names)
+}
+
+fn assert_archive_contents(
+    entries: &[String],
+    expected_present: &[&str],
+    expected_absent_prefixes: &[&str],
+) {
+    for present in expected_present {
+        assert!(
+            entries.iter().any(|e| e == present),
+            "Expected '{present}' in archive entries {entries:?}"
+        );
+    }
+    for absent in expected_absent_prefixes {
+        assert!(
+            !entries
+                .iter()
+                .any(|e| e == absent || e.starts_with(&format!("{absent}/"))),
+            "Expected '{absent}' (and its children) to be absent from archive entries {entries:?}"
+        );
+    }
+}
+
 #[test]
 fn cli_conflict_between_ignore_file_and_exclude_include_fails() -> Result<(), Error> {
     let tmp = TempDir::new()?;
@@ -198,62 +267,85 @@ fn viewers_respect_exclude_and_include(
 }
 
 #[rstest]
-fn archive_downloads_disabled_on_excluded_and_passthrough_trees(
+fn archive_downloads_respect_exclude_and_include_filters(
     #[with(&["-r", "-g", "-z", "--exclude", "/abc/def", "--include", "/abc/def/ghi/jkl"])]
     server: TestServer,
     reqwest_client: Client,
 ) -> Result<(), Error> {
     create_test_hierarchy(server.path())?;
 
-    // Root, /abc/, and /abc/def/ contain excluded subtrees -> 403 Forbidden
+    // Archive buttons are rendered on root (/), Allowed (/abc/, /abc/def/ghi/jkl/), and PassThrough (/abc/def/)
+    for path in ["", "abc/", "abc/def/", "abc/def/ghi/jkl/"] {
+        let html = reqwest_client
+            .get(server.url().join(path)?)
+            .send()?
+            .error_for_status()?
+            .text()?;
+        let doc = Document::from(html.as_str());
+        assert!(
+            doc.find(Class("download_tools")).next().is_some(),
+            "Expected download_tools on '/{path}'"
+        );
+    }
+
+    // Denied directories cannot be archived -> 404 Not Found
     assert_eq!(
         reqwest_client
-            .get(server.url().join("?download=tar")?)
+            .get(server.url().join("abc/def/other_dir/?download=tar")?)
             .send()?
             .status(),
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(
-        reqwest_client
-            .get(server.url().join("abc/?download=tar_gz")?)
-            .send()?
-            .status(),
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(
-        reqwest_client
-            .get(server.url().join("abc/def/?download=zip")?)
-            .send()?
-            .status(),
-        StatusCode::FORBIDDEN
+        StatusCode::NOT_FOUND
     );
 
-    // /abc/def/ghi/jkl/ has no exclusions inside it -> 200 OK
-    assert_eq!(
-        reqwest_client
-            .get(server.url().join("abc/def/ghi/jkl/?download=tar")?)
-            .send()?
-            .status(),
-        StatusCode::OK
-    );
-
-    // /clean_dir/ has no exclusions -> 200 OK and archive buttons are rendered
-    let clean_html = reqwest_client
-        .get(server.url().join("clean_dir/")?)
+    // 1. Root TAR filters out excluded paths while retaining re-included subtree
+    let root_tar = reqwest_client
+        .get(server.url().join("?download=tar")?)
         .send()?
         .error_for_status()?
-        .text()?;
-    let clean_doc = Document::from(clean_html.as_str());
-    assert!(clean_doc.find(Class("download_tools")).next().is_some());
+        .bytes()?;
+    let root_entries = collect_tar_entries(&root_tar)?;
+    assert_archive_contents(
+        &root_entries,
+        &[
+            "public.txt",
+            "abc/visible.txt",
+            "abc/def/ghi/jkl/allowed.txt",
+            "abc/def/ghi/jkl/README.md",
+        ],
+        &[
+            "abc/def/secret.txt",
+            "abc/def/secret.md",
+            "abc/def/README.md",
+            "abc/def/other_dir",
+            "abc/def/ghi/mid_secret.txt",
+        ],
+    );
 
-    // /abc/def/ hides archive buttons
-    let def_html = reqwest_client
-        .get(server.url().join("abc/def/")?)
+    // 2. /abc/ TAR.GZ filters out excluded paths inside /abc/def/
+    let abc_tar_gz = reqwest_client
+        .get(server.url().join("abc/?download=tar_gz")?)
         .send()?
         .error_for_status()?
-        .text()?;
-    let def_doc = Document::from(def_html.as_str());
-    assert!(def_doc.find(Class("download_tools")).next().is_none());
+        .bytes()?;
+    let abc_entries = collect_tar_gz_entries(&abc_tar_gz)?;
+    assert_archive_contents(
+        &abc_entries,
+        &["visible.txt", "def/ghi/jkl/allowed.txt"],
+        &["def/secret.txt", "def/other_dir", "def/ghi/mid_secret.txt"],
+    );
+
+    // 3. PassThrough /abc/def/ ZIP archives only the re-included branch
+    let def_zip = reqwest_client
+        .get(server.url().join("abc/def/?download=zip")?)
+        .send()?
+        .error_for_status()?
+        .bytes()?;
+    let def_entries = collect_zip_entries(&def_zip)?;
+    assert_archive_contents(
+        &def_entries,
+        &["ghi/jkl/allowed.txt", "ghi/jkl/allowed.md"],
+        &["secret.txt", "other_dir", "ghi/mid_secret.txt"],
+    );
 
     Ok(())
 }
@@ -558,7 +650,12 @@ fn ignore_file_whitelist_idiom_star_not_star_slash_not_pdf() -> Result<(), Error
 
     let (_guard, base) = spawn_server_with_args(
         tmp.path(),
-        [OsStr::new("--ignore-file"), ignore_file.path().as_os_str()],
+        [
+            OsStr::new("-r"),
+            OsStr::new("-z"),
+            OsStr::new("--ignore-file"),
+            ignore_file.path().as_os_str(),
+        ],
     )?;
     let client = reqwest_client();
 
@@ -588,6 +685,31 @@ fn ignore_file_whitelist_idiom_star_not_star_slash_not_pdf() -> Result<(), Error
     let pdf_resp = client.get(base.join("abc/def/doc.pdf")?).send()?;
     assert_eq!(pdf_resp.status(), StatusCode::OK);
     assert_eq!(pdf_resp.text()?, "%PDF-1.4");
+
+    // Archive downloads with whitelist ignore rules keep only matched files
+    let tar_bytes = client
+        .get(base.join("?download=tar")?)
+        .send()?
+        .error_for_status()?
+        .bytes()?;
+    let tar_entries = collect_tar_entries(&tar_bytes)?;
+    assert_archive_contents(
+        &tar_entries,
+        &["abc/def/doc.pdf"],
+        &["public.txt", "abc/visible.txt", "abc/def/secret.txt"],
+    );
+
+    let zip_bytes = client
+        .get(base.join("?download=zip")?)
+        .send()?
+        .error_for_status()?
+        .bytes()?;
+    let zip_entries = collect_zip_entries(&zip_bytes)?;
+    assert_archive_contents(
+        &zip_entries,
+        &["abc/def/doc.pdf"],
+        &["public.txt", "abc/visible.txt", "abc/def/secret.txt"],
+    );
 
     Ok(())
 }
@@ -644,6 +766,7 @@ fn ignore_file_allows_archive_and_rm_on_clean_dirs_and_auto_denies_self() -> Res
         [
             OsStr::new("--hidden"),
             OsStr::new("-r"),
+            OsStr::new("-z"),
             OsStr::new("-R"),
             OsStr::new("--ignore-file"),
             ignore_in_root.as_os_str(),
@@ -655,6 +778,29 @@ fn ignore_file_allows_archive_and_rm_on_clean_dirs_and_auto_denies_self() -> Res
     assert_eq!(
         client.get(base.join(".miniserveignore")?).send()?.status(),
         StatusCode::NOT_FOUND
+    );
+
+    // Filtered root TAR and ZIP omit auto-denied .miniserveignore, *.log, and /abc/def/
+    let root_tar = client
+        .get(base.join("?download=tar")?)
+        .send()?
+        .error_for_status()?
+        .bytes()?;
+    assert_archive_contents(
+        &collect_tar_entries(&root_tar)?,
+        &["public.txt", "abc/visible.txt"],
+        &[".miniserveignore", "debug.log", "abc/def"],
+    );
+
+    let root_zip = client
+        .get(base.join("?download=zip")?)
+        .send()?
+        .error_for_status()?
+        .bytes()?;
+    assert_archive_contents(
+        &collect_zip_entries(&root_zip)?,
+        &["public.txt", "abc/visible.txt"],
+        &[".miniserveignore", "debug.log", "abc/def"],
     );
 
     // rm on /abc (contains excluded /abc/def/) -> 403 Forbidden
@@ -691,13 +837,12 @@ fn ignore_file_allows_archive_and_rm_on_clean_dirs_and_auto_denies_self() -> Res
             .status(),
         StatusCode::OK
     );
-    assert_eq!(
-        client
-            .get(base2.join("abc/?download=tar")?)
-            .send()?
-            .status(),
-        StatusCode::FORBIDDEN
-    );
+    let abc_tar = client
+        .get(base2.join("abc/?download=tar")?)
+        .send()?
+        .error_for_status()?
+        .bytes()?;
+    assert_archive_contents(&collect_tar_entries(&abc_tar)?, &["visible.txt"], &["def"]);
 
     Ok(())
 }
@@ -705,7 +850,7 @@ fn ignore_file_allows_archive_and_rm_on_clean_dirs_and_auto_denies_self() -> Res
 #[cfg(unix)]
 #[rstest]
 fn symlink_to_excluded_target_is_blocked(
-    #[with(&["-u", "-R", "--exclude", "/abc/def", "--include", "/abc/def/ghi/jkl"])]
+    #[with(&["-u", "-r", "-z", "-R", "--exclude", "/abc/def", "--include", "/abc/def/ghi/jkl"])]
     server: TestServer,
     reqwest_client: Client,
 ) -> Result<(), Error> {
@@ -718,6 +863,7 @@ fn symlink_to_excluded_target_is_blocked(
         server.path().join("abc/def"),
         server.path().join("public_dir_link"),
     )?;
+    std::os::unix::fs::symlink("..", server.path().join("clean_dir/cycle_link"))?;
 
     assert_eq!(
         reqwest_client
@@ -756,6 +902,84 @@ fn symlink_to_excluded_target_is_blocked(
         StatusCode::FORBIDDEN
     );
     assert!(server.path().join("abc/def/secret.txt").exists());
+
+    // Archive downloads must omit symlinks to excluded targets, break cycles cleanly,
+    // and still include both the aliased symlink target and the real directory subtree.
+    let tar_bytes = reqwest_client
+        .get(server.url().join("?download=tar")?)
+        .send()?
+        .error_for_status()?
+        .bytes()?;
+    assert_archive_contents(
+        &collect_tar_entries(&tar_bytes)?,
+        &[
+            "public.txt",
+            "abc/def/ghi/jkl/allowed.txt",
+            "public_dir_link/ghi/jkl/allowed.txt",
+            "clean_dir/item.txt",
+        ],
+        &[
+            "public_link",
+            "public_dir_link/secret.txt",
+            "abc/def/secret.txt",
+        ],
+    );
+
+    let zip_bytes = reqwest_client
+        .get(server.url().join("?download=zip")?)
+        .send()?
+        .error_for_status()?
+        .bytes()?;
+    assert_archive_contents(
+        &collect_zip_entries(&zip_bytes)?,
+        &[
+            "public.txt",
+            "abc/def/ghi/jkl/allowed.txt",
+            "public_dir_link/ghi/jkl/allowed.txt",
+            "clean_dir/item.txt",
+        ],
+        &[
+            "public_link",
+            "public_dir_link/secret.txt",
+            "abc/def/secret.txt",
+        ],
+    );
+
+    // Downloading a real subdirectory nested underneath a symlinked directory must still
+    // enforce canonical target filtering (blocking excluded siblings like mid_secret.txt).
+    let link_sub_tar = reqwest_client
+        .get(server.url().join("public_dir_link/ghi/?download=tar")?)
+        .send()?
+        .error_for_status()?
+        .bytes()?;
+    assert_archive_contents(
+        &collect_tar_entries(&link_sub_tar)?,
+        &["jkl/allowed.txt"],
+        &["mid_secret.txt"],
+    );
+
+    let link_sub_zip = reqwest_client
+        .get(server.url().join("public_dir_link/ghi/?download=zip")?)
+        .send()?
+        .error_for_status()?
+        .bytes()?;
+    assert_archive_contents(
+        &collect_zip_entries(&link_sub_zip)?,
+        &["jkl/allowed.txt"],
+        &["mid_secret.txt"],
+    );
+
+    // Downloading directly from a symlinked directory root itself must also filter cleanly.
+    let link_tar = reqwest_client
+        .get(server.url().join("public_dir_link/?download=tar")?)
+        .send()?
+        .error_for_status()?
+        .bytes()?;
+    assert_archive_contents(
+        &collect_tar_entries(&link_tar)?,
+        &["ghi/jkl/allowed.txt"],
+        &["secret.txt", "other_dir", "ghi/mid_secret.txt"],
+    );
 
     Ok(())
 }

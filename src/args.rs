@@ -516,11 +516,12 @@ pub struct CliArgs {
     )]
     pub log_color: LogColor,
 
-    /// Exclude specific relative path prefixes from being served or listed
+    /// Exclude specific relative path prefixes from being served, listed, or archived
     ///
     /// Can be specified multiple times. Paths are matched lexically, case-sensitively, and relative
-    /// to the served root directory (e.g., `--exclude /abc/def` or `--exclude abc/def`). Cannot be
-    /// used together with `--ignore-file`.
+    /// to the served root directory (e.g., `--exclude /abc/def` or `--exclude abc/def`). Excluded
+    /// entries are omitted from directory listings and archive downloads (`tar`, `tar.gz`, `zip`).
+    /// Cannot be used together with `--ignore-file`.
     #[arg(
         long = "exclude",
         value_hint = ValueHint::AnyPath,
@@ -535,9 +536,9 @@ pub struct CliArgs {
     /// Explicitly include specific relative path prefixes underneath an excluded path
     ///
     /// Can be specified multiple times and requires `--exclude`. Intermediate parent directories
-    /// leading to an included path will be navigable as pass-through directories (listing only
-    /// allowed subdirectories, while keeping sibling files and folders hidden). Cannot be used
-    /// together with `--ignore-file`.
+    /// leading to an included path will be navigable as pass-through directories (listing and
+    /// archiving only allowed subdirectories, while keeping sibling files and folders hidden).
+    /// Cannot be used together with `--ignore-file`.
     #[arg(
         long = "include",
         value_hint = ValueHint::AnyPath,
@@ -553,8 +554,9 @@ pub struct CliArgs {
     /// Path to a .gitignore-style file specifying patterns to exclude or re-include (!)
     ///
     /// Patterns are matched case-sensitively relative to the served root directory, and negated (`!`)
-    /// rules can re-include subpaths underneath excluded parent directories. Cannot be used together
-    /// with `--exclude` or `--include`.
+    /// rules can re-include subpaths underneath excluded parent directories. Excluded entries are
+    /// omitted from directory listings and archive downloads (`tar`, `tar.gz`, `zip`). Cannot be
+    /// used together with `--exclude` or `--include`.
     #[arg(
         long = "ignore-file",
         value_hint = ValueHint::FilePath,
