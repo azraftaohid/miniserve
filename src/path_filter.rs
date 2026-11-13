@@ -58,15 +58,8 @@ pub enum PathFilter {
 
 /// Normalizes a path into a clean relative `PathBuf` with only `Component::Normal` segments.
 pub fn normalize_rel_path(path: impl AsRef<Path>) -> PathBuf {
-    #[cfg(windows)]
-    let cleaned = path.as_ref().to_string_lossy().replace('\\', "/");
-    #[cfg(windows)]
-    let path_ref = Path::new(cleaned.as_ref());
-    #[cfg(not(windows))]
-    let path_ref = path.as_ref();
-
     let mut buf = PathBuf::new();
-    for comp in path_ref.components() {
+    for comp in path.as_ref().components() {
         match comp {
             Component::Normal(c) => buf.push(c),
             Component::ParentDir => {
@@ -788,5 +781,14 @@ mod tests {
         assert!(!ignore_filter.is_file_allowed("#hash.txt"));
         assert!(!ignore_filter.is_file_allowed("foo bar.txt"));
         assert!(ignore_filter.is_file_allowed("normal.txt"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_windows_normalize_rel_path_treats_backslashes_as_separators() {
+        assert_eq!(
+            normalize_rel_path(r"abc\def\..\ghi\jkl"),
+            PathBuf::from("abc/ghi/jkl")
+        );
     }
 }
