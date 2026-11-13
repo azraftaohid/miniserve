@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 - Fix suffix generation for pastes in non-HTTPS env [#1562](https://github.com/svenstaro/miniserve/pull/1562) (thanks @pzhlkj6612)
 - Replace grass with sasso to compile the SCSS [#1591](https://github.com/svenstaro/miniserve/pull/1591)
 
+## [0.35.0-azraftaohid.5] - 2026-11-13
+- Add `--exclude`, `--include`, and `--ignore-file` (`.gitignore`-style) options for path filtering with pass-through directory navigation across listings, static files, built-in viewers, WebDAV, `DirSize` API, `wget` raw mode, uploads, and deletions
+- Support selective `.tar`, `.tar.gz`, and `.zip` archive downloads that filter out excluded entries while preserving pass-through and symlinked subtrees safely
+
 ## [0.35.0-azraftaohid.4] - 2026-11-09
 - Fix Markdown tables showing only the first column on mobile devices
 - Enable smooth horizontal scrolling for Markdown tables on mobile and desktop
