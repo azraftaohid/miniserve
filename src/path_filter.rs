@@ -61,7 +61,7 @@ pub fn normalize_rel_path(path: impl AsRef<Path>) -> PathBuf {
     #[cfg(windows)]
     let cleaned = path.as_ref().to_string_lossy().replace('\\', "/");
     #[cfg(windows)]
-        let path_ref = Path::new(cleaned.as_str());
+    let path_ref = Path::new(cleaned.as_str());
     #[cfg(not(windows))]
     let path_ref = path.as_ref();
 
